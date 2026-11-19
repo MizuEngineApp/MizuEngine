@@ -93,26 +93,48 @@ namespace MizuEngine
             {
                 if (string.IsNullOrWhiteSpace(Repo)) throw new InvalidOperationException("Updater.Repo is empty");
                 _http ??= CreateClient(TimeSpan.FromSeconds(15));
-                using var resp = await _http.GetAsync($"https://api.github.com/repos/{Repo}/releases/latest");
-                if (!resp.IsSuccessStatusCode) throw new HttpRequestException("GitHub: " + (int)resp.StatusCode);
-                using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-                var root = doc.RootElement;
-                string tag = Str(root, "tag_name");
-                string url = Str(root, "html_url");
-
-                var v = Parse(tag);
-                if (v != null && v > Normalize(Current))
+                string tag, url = null, body = null;
+                JsonDocument doc = null;
+                using (var resp = await _http.GetAsync($"https://api.github.com/repos/{Repo}/releases/latest"))
                 {
-                    Latest = v;
-                    ReleaseUrl = string.IsNullOrEmpty(url) ? $"https://github.com/{Repo}/releases/latest" : url;
-                    _notes = Str(root, "body");
-                    ReadAsset(root);
-                    result = State.Available;
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+                        tag = Str(doc.RootElement, "tag_name");
+                        url = Str(doc.RootElement, "html_url");
+                        body = Str(doc.RootElement, "body");
+                    }
+                    else if ((int)resp.StatusCode == 403 || (int)resp.StatusCode == 429)
+                    {
+                        // Лимит API без входа — 60 запросов в час на IP (общий VPN исчерпывает его быстро).
+                        // Запасной путь без лимита: github.com/…/releases/latest перенаправляет на …/tag/vX.Y.Z
+                        tag = await TagFromRedirect();
+                    }
+                    else throw new HttpRequestException("GitHub: " + (int)resp.StatusCode);
                 }
-                else
+
+                using (doc)
                 {
-                    Latest = null;
-                    result = State.UpToDate;
+                    var v = Parse(tag);
+                    if (v != null && v > Normalize(Current))
+                    {
+                        Latest = v;
+                        ReleaseUrl = string.IsNullOrEmpty(url) ? $"https://github.com/{Repo}/releases/tag/{tag}" : url;
+                        _notes = body;
+                        if (doc != null) ReadAsset(doc.RootElement);
+                        else
+                        {
+                            // Без API нет размера и SHA-256 — exe всё равно проверяется по подписи rainy (Guard.IsGenuine)
+                            AssetUrl = $"https://github.com/{Repo}/releases/download/{tag}/{AssetName}";
+                            _assetSize = 0; _assetSha256 = null;
+                        }
+                        result = State.Available;
+                    }
+                    else
+                    {
+                        Latest = null;
+                        result = State.UpToDate;
+                    }
                 }
                 LastCheck = DateTime.Now;
             }
@@ -131,6 +153,20 @@ namespace MizuEngine
                 _timer.Start();
             }
             return result;
+        }
+
+        /// <summary>Тег последнего релиза по перенаправлению github.com/…/releases/latest → …/releases/tag/v0.10.1.</summary>
+        static async Task<string> TagFromRedirect()
+        {
+            using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+            using var c = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
+            c.DefaultRequestHeaders.UserAgent.ParseAdd("MizuEngine/" + Current.ToString(3));
+            using var req = new HttpRequestMessage(HttpMethod.Head, $"https://github.com/{Repo}/releases/latest");
+            using var resp = await c.SendAsync(req);
+            string loc = resp.Headers.Location?.ToString();
+            int i = loc?.LastIndexOf("/tag/", StringComparison.Ordinal) ?? -1;
+            if (i < 0) throw new HttpRequestException("GitHub: no release redirect (" + (int)resp.StatusCode + ")");
+            return Uri.UnescapeDataString(loc.Substring(i + 5).Trim('/'));
         }
 
         /// <summary>MizuEngine.exe в релизе: ссылка, размер и SHA-256 (GitHub считает его сам).</summary>

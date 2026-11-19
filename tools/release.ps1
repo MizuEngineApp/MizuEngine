@@ -48,7 +48,7 @@ function Read-Token {
 function Get-PlainToken {
     if ($Mode -eq "token" -or -not (Test-Path $TokenFile)) { $sec = Read-Token }
     else {
-        try { $sec = Get-Content $TokenFile -Raw | ConvertTo-SecureString } catch { $sec = Read-Token }
+        try { $sec = (Get-Content $TokenFile -Raw).Trim() | ConvertTo-SecureString } catch { $sec = Read-Token }
     }
     $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
     try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($b) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
@@ -216,8 +216,10 @@ if ($asset.digest -and $asset.digest -ne "sha256:$ExeSha256") { Fail "SHA-256 н
 
 # ---------- проверка: так же, как спрашивает приложение ----------
 Start-Sleep -Seconds 2
-$latest = Invoke-RestMethod -Uri "$Api/repos/$Repo/releases/latest" -Headers @{ "User-Agent" = "MizuEngine-check" }
-if ($latest.tag_name -ne $Tag) { Say "Внимание: последним релизом GitHub пока считает $($latest.tag_name)." "Yellow" }
+try {
+    $latest = Gh GET "/repos/$Repo/releases/latest"
+    if ($latest.tag_name -ne $Tag) { Say "Внимание: последним релизом GitHub пока считает $($latest.tag_name)." "Yellow" }
+} catch { Say "Не получилось перепроверить последний релиз (это не страшно): $($_.Exception.Message)" "Yellow" }
 
 Say ""
 Say "Готово! MizuEngine $Tag выложен: $($release.html_url)" "Green"
