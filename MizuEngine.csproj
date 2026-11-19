@@ -1,0 +1,73 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Windows 10 SDK: нужен Dynamic Island, чтобы узнавать, что играет в любом плеере (System Media Transport Controls) -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <RollForward>Major</RollForward>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>MizuEngine</RootNamespace>
+    <AssemblyName>MizuEngine</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Иконка exe: её берут Проводник, док, Alt+Tab и заголовки окон -->
+    <ApplicationIcon>Assets\MizuEngine.ico</ApplicationIcon>
+    <Version>0.10.1</Version>
+    <!-- Меньше памяти: без фонового сборщика мусора и с режимом экономии памяти -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!-- Автор и авторские права: видны в «Свойства → Подробно» у MizuEngine.exe -->
+    <Product>MizuEngine</Product>
+    <AssemblyTitle>MizuEngine</AssemblyTitle>
+    <Company>rainy</Company>
+    <Authors>rainy</Authors>
+    <Copyright>© 2026 rainy (t.me/MrRainthisisme). Все права защищены. All rights reserved.</Copyright>
+    <Description>MizuEngine — кастомизация Windows: док в стиле macOS, Dynamic Island, эффекты рабочего стола. Автор — rainy.</Description>
+    <NeutralLanguage>ru</NeutralLanguage>
+    <!-- Отпечаток сертификата rainy (signing\thumbprint.txt, создаёт make-cert.bat): по нему официальная сборка проверяет свою подпись -->
+    <MizuSignerThumb Condition="Exists('$(MSBuildProjectDirectory)\signing\thumbprint.txt')">$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)\signing\thumbprint.txt').Trim())</MizuSignerThumb>
+  </PropertyGroup>
+
+  <!-- Сборка для раздачи (build-share.bat): вшиваем отпечаток подписи — изменённый exe не запустится (Security/Guard.cs) -->
+  <ItemGroup Condition="'$(MizuRelease)' == 'true' and '$(MizuSignerThumb)' != ''">
+    <AssemblyMetadata Include="MizuSigner" Value="$(MizuSignerThumb)" />
+  </ItemGroup>
+
+  <!-- Сборка для раздачи: запутывание кода (Obfuscar, бесплатный, MIT). Настройки — obfuscar.xml -->
+  <ItemGroup Condition="'$(MizuObfuscate)' == 'true'">
+    <PackageReference Include="Obfuscar" Version="2.2.50" PrivateAssets="all" ExcludeAssets="all" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <Target Name="MizuObfuscate" AfterTargets="CoreCompile" Condition="'$(MizuObfuscate)' == 'true' and !$(MSBuildProjectName.EndsWith('_wpftmp'))">
+    <ItemGroup>
+      <_MizuRefDir Include="@(ReferencePath->'%(RootDir)%(Directory)')" />
+      <_MizuSearchLine Include="@(_MizuRefDir->Distinct()->'&lt;AssemblySearchPath path=&quot;%(Identity)&quot; /&gt;')" />
+    </ItemGroup>
+    <RemoveDir Directories="$(MSBuildProjectDirectory)\obj\obf" />
+    <MakeDir Directories="$(MSBuildProjectDirectory)\obj\obf\in;$(MSBuildProjectDirectory)\obj\obf\out" />
+    <Copy SourceFiles="@(IntermediateAssembly)" DestinationFolder="$(MSBuildProjectDirectory)\obj\obf\in" />
+    <WriteLinesToFile File="$(MSBuildProjectDirectory)\obj\obf\paths.xml" Overwrite="true"
+                      Lines="&lt;?xml version=&quot;1.0&quot;?&gt;;&lt;Include&gt;;@(_MizuSearchLine);&lt;/Include&gt;" />
+    <Exec Command="&quot;$(PkgObfuscar)\tools\Obfuscar.Console.exe&quot; obfuscar.xml" WorkingDirectory="$(MSBuildProjectDirectory)" IgnoreStandardErrorWarningFormat="true" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\obj\obf\out\MizuEngine.dll" DestinationFiles="@(IntermediateAssembly)" />
+    <Message Importance="high" Text="MizuEngine: code obfuscated (Obfuscar)" />
+  </Target>
+
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="7" />
+    <!-- Та же иконка внутри exe — для трея (нужный размер под масштаб экрана) -->
+    <EmbeddedResource Include="Assets\MizuEngine.ico" LogicalName="MizuEngine.ico" />
+    <!-- Иконка в меню слева: уменьшенная копия MizuEngine_icon_4k.png (4K-файл в программу не кладём — он весит 2 МБ) -->
+    <Resource Include="Assets\MizuEngine_logo_128.png" />
+    <!-- Необязательные логотипы для страницы «Автор»: если файлов нет, рисуются встроенные значки -->
+    <Resource Include="Assets\tbank.png" Condition="Exists('Assets\tbank.png')" />
+    <Resource Include="Assets\donationalerts.png" Condition="Exists('Assets\donationalerts.png')" />
+  </ItemGroup>
+
+</Project>
