@@ -28,18 +28,61 @@ namespace MizuEngine
                 bool hide = DockOn?.Invoke(DockNative.MonitorFromWindow(h, 2)) == true;
                 if (hide)
                 {
-                    if (Native.IsWindowVisible(h)) DockNative.ShowWindow(h, DockNative.SW_HIDE);
+                    // Панель не прячем совсем (тогда Windows не может открыть на этом мониторе меню «Пуск»),
+                    // а даём ей пустую форму окна: она невидима и «прозрачна» для кликов, даже когда выезжает у нижнего края
                     _hiddenSecondary.Add(h);
+                    if (!HasEmptyRegion(h)) SetRegion(h, true);
+                    if (!Native.IsWindowVisible(h)) DockNative.ShowWindow(h, DockNative.SW_SHOWNA);
                 }
-                else if (_hiddenSecondary.Remove(h)) DockNative.ShowWindow(h, DockNative.SW_SHOWNA);
+                else if (_hiddenSecondary.Remove(h)) { SetRegion(h, false); DockNative.ShowWindow(h, DockNative.SW_SHOWNA); }
             }
             _hiddenSecondary.RemoveWhere(x => !alive.Contains(x));   // Explorer перезапустился — старых окон больше нет
         }
 
         static void ShowSecondary()
         {
-            foreach (var h in _hiddenSecondary) if (DockNative.IsWindow(h)) DockNative.ShowWindow(h, DockNative.SW_SHOWNA);
+            foreach (var h in _hiddenSecondary) if (DockNative.IsWindow(h)) { SetRegion(h, false); DockNative.ShowWindow(h, DockNative.SW_SHOWNA); }
             _hiddenSecondary.Clear();
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern int GetWindowRgn(IntPtr h, IntPtr rgn);
+
+        /// <summary>Форма окна уже пустая (Проводник мог её сбросить, перерисовав панель).</summary>
+        static bool HasEmptyRegion(IntPtr h)
+        {
+            IntPtr tmp = DockNative.CreateRectRgn(0, 0, 0, 0);
+            try { return GetWindowRgn(h, tmp) == 1; }   // NULLREGION
+            finally { DockNative.DeleteObject(tmp); }
+        }
+
+        static void SetRegion(IntPtr h, bool empty)
+        {
+            try { DockNative.SetWindowRgn(h, empty ? DockNative.CreateRectRgn(0, 0, 0, 0) : IntPtr.Zero, true); } catch { }
+        }
+
+        /// <summary>
+        /// Аварийно вернуть все панели задач (MizuEngine упал, его перезапускает «сторож»):
+        /// главную и на других мониторах — с нормальной формой окна.
+        /// </summary>
+        public static void RestoreAll(Settings s)
+        {
+            try
+            {
+                IntPtr h = IntPtr.Zero;
+                while ((h = DockNative.FindWindowEx(IntPtr.Zero, h, "Shell_SecondaryTrayWnd", null)) != IntPtr.Zero)
+                {
+                    SetRegion(h, false);
+                    DockNative.ShowWindow(h, DockNative.SW_SHOWNA);
+                }
+                _hiddenSecondary.Clear();
+                if (s.SavedTaskbarState >= 0) Restore(s);
+                else
+                {
+                    IntPtr tray = DockNative.ExplorerTray();
+                    if (tray != IntPtr.Zero && !Native.IsWindowVisible(tray)) DockNative.ShowWindow(tray, 5);
+                }
+            }
+            catch { }
         }
 
         public static void Hide(Settings s)

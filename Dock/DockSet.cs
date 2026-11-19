@@ -1,4 +1,4 @@
-// MizuEngine © 2026 rainy (t.me/MrRainthisisme). Все права защищены. Копировать код и выпускать изменённые версии запрещено — см. LICENSE.
+﻿// MizuEngine © 2026 rainy (t.me/MrRainthisisme). Все права защищены. Копировать код и выпускать изменённые версии запрещено — см. LICENSE.
 using System;
 using System.Collections.Generic;
 using System.Windows;
@@ -51,17 +51,51 @@ namespace MizuEngine
                     _s.DockPins = DockApps.ImportWindowsPins();   // первый запуск: берём закреплённое на панели задач Windows
                     _s.Save();
                 }
-                Sync();
+                // Сначала прячем панель задач Windows, потом резервируем место под доки. Наоборот (как было в 0.11.0)
+                // место внизу на миг отнимали оба сразу — и Windows пересаживал нижние ярлыки рабочего стола на другой монитор
+                DesktopIcons.Snapshot();
                 Taskbar.Hide(_s);
+                Sync();
                 ApplyShared();
+                DesktopIcons.RestoreLater();
             }
             else
             {
+                DesktopIcons.Snapshot();
                 foreach (var d in _docks) d.SetEnabled(false);
                 TrayHost.Stop();
                 Taskbar.Restore(_s);
+                DesktopIcons.RestoreLater();
             }
             Shell.SyncAnimations();
+        }
+
+        /// <summary>
+        /// Восстановление после сбоя Windows: Проводник перезапустился, вышли из сна, разблокировали ПК, сменились мониторы.
+        /// Панель задач прячется снова, доки заново резервируют место, трей переподключается.
+        /// </summary>
+        public void Recover()
+        {
+            if (!_d.CheckAccess()) { _d.BeginInvoke(new Action(Recover)); return; }
+            if (!_enabled) return;
+            try
+            {
+                DesktopIcons.Snapshot();
+                Taskbar.Hide(_s);
+                Sync();
+                foreach (var d in _docks) d.Recover();
+                if (_s.DockClock && _s.DockTray) { TrayHost.Stop(); TrayHost.Start(); }
+                Taskbar.EnsureHidden();
+                DesktopIcons.RestoreLater();
+            }
+            catch (Exception e) { Settings.Log(e); }
+        }
+
+        /// <summary>Запасная цель «джинна»: середина дока монитора окна (если значка этого окна в доке нет).</summary>
+        public Rect FallbackIcon(IntPtr hwnd)
+        {
+            if (!_d.CheckAccess()) return (Rect)_d.Invoke(new Func<Rect>(() => FallbackIcon(hwnd)));
+            return OwnerOf(hwnd)?.PillOnScreen() ?? Rect.Empty;
         }
 
         public void ApplySettings()
@@ -104,6 +138,16 @@ namespace MizuEngine
                 if (m.Primary || (_s.DockAllMonitors && !(_s.DockMonitorsOff?.Contains(m.Id) ?? false))) want.Add(m);
             if (want.Count == 0 && mons.Count > 0) want.Add(mons[0]);
 
+            // Док появится или пропадёт — запоминаем ярлыки рабочего стола, чтобы вернуть их, если Windows их сдвинет
+            bool change = want.Count != _docks.Count || !want.TrueForAll(m => _docks.Exists(d => d.Mon != null && d.Mon.Device == m.Device));
+            bool watch = change && _docks.Count > 0;
+            if (watch) DesktopIcons.Snapshot();
+            SyncCore(want);
+            if (watch) DesktopIcons.RestoreLater();
+        }
+
+        void SyncCore(List<MonitorInfo> want)
+        {
             if (want.Count == 0)
             {
                 // Мониторов не нашлось (редкий сбой WinAPI) — один док, как раньше, по размеру главного экрана

@@ -165,19 +165,42 @@ namespace MizuEngine
 
         // ---------- аватарка и галочка ----------
 
+        /// <summary>
+        /// Старый способ: WPF сам качает картинку. Оставлен для совместимости; новое — WebBrush/ImageCache
+        /// (свой кэш на диске, повторные попытки, правильная обрезка).
+        /// </summary>
         public static ImageSource Web(string url, int decode)
         {
             if (string.IsNullOrEmpty(url)) return null;
+            var ready = ImageCache.Peek(url, decode, false);
+            if (ready != null) return ready;
             try
             {
                 var b = new BitmapImage();
                 b.BeginInit();
                 b.UriSource = new Uri(url);
                 b.DecodePixelWidth = decode;
+                b.CreateOptions = BitmapCreateOptions.IgnoreImageCache;   // общий кэш WPF отдавал картинку то одного, то другого размера
                 b.EndInit();   // картинка скачивается в фоне и появится сама
                 return b;
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// Кисть с картинкой из интернета (или с диска): сразу пустая, сама заполняется, когда картинка готова.
+        /// Картинка берётся из ImageCache: кэш на диске, 3 попытки, поворот по EXIF. square — квадрат из середины.
+        /// </summary>
+        public static ImageBrush WebBrush(string url, int px, Stretch stretch = Stretch.UniformToFill, bool square = false, Action ready = null)
+        {
+            var brush = new ImageBrush { Stretch = stretch };
+            if (string.IsNullOrEmpty(url)) return brush;
+            ImageCache.Load(url, px, square, bmp =>
+            {
+                brush.ImageSource = bmp;
+                ready?.Invoke();
+            });
+            return brush;
         }
 
         /// <summary>Квадрат из середины картинки (по настоящим пикселям, без учёта DPI и прочих данных файла).</summary>
@@ -196,6 +219,31 @@ namespace MizuEngine
             catch { return b; }
         }
 
+        /// <summary>
+        /// Картинка аватарки поверх буквы. ImageCache сам качает (3 попытки, кэш на диске) и вырезает квадрат ровно
+        /// из середины по настоящим пикселям — поэтому аватарка больше не «съезжает» и не пропадает.
+        /// Если картинка уже в памяти — рисуется сразу, без мигания буквой.
+        /// </summary>
+        public static void AvatarFace(Panel g, string url, double size)
+        {
+            if (string.IsNullOrEmpty(url)) return;
+            int px = (int)Math.Ceiling(size * 2.5);   // с запасом на масштаб экрана 150–250%
+            var face = new Ellipse { Opacity = 0, IsHitTestVisible = false };
+            g.Children.Add(face);
+            var ready = ImageCache.Peek(url, px, true);
+            if (ready != null)
+            {
+                face.Fill = new ImageBrush(ready) { Stretch = Stretch.Fill };
+                face.Opacity = 1;
+                return;
+            }
+            ImageCache.Load(url, px, true, bmp =>
+            {
+                face.Fill = new ImageBrush(bmp) { Stretch = Stretch.Fill };
+                Anim.To(face, UIElement.OpacityProperty, 1, 220, from: 0);
+            });
+        }
+
         /// <summary>Круглая аватарка: первая буква ника на градиенте, а поверх — картинка, когда скачается.</summary>
         public static FrameworkElement Avatar(Profile p, double size)
         {
@@ -210,24 +258,7 @@ namespace MizuEngine
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
             });
 
-            // Картинка рисуется кистью внутри круга: кисть сама обрезает и центрирует любую (и неквадратную) картинку.
-            // Раньше это был Image с UniformToFill — он рисуется от левого верхнего угла, поэтому аватарка «уезжала» в угол.
-            // Кисть создаём заново, когда картинка докачалась, — иначе она не узнаёт настоящий размер.
-            if (Web(p?.AvatarUrl, (int)(size * 2)) is BitmapImage img)
-            {
-                var face = new Ellipse { Opacity = 0 };
-                g.Children.Add(face);
-                void Paint()
-                {
-                    if (img.PixelWidth <= 1) return;
-                    // Сами вырезаем квадрат из середины картинки и растягиваем его ровно на круг:
-                    // так аватарка физически не может уехать в угол, какой бы ни была картинка
-                    face.Fill = new ImageBrush(Square(img)) { Stretch = Stretch.Fill };
-                    face.Opacity = 1;
-                }
-                if (img.IsDownloading) img.DownloadCompleted += (s, a) => Paint();
-                else Paint();
-            }
+            AvatarFace(g, p?.AvatarUrl, size);
             g.Children.Add(new Ellipse { Stroke = new SolidColorBrush(Color.FromArgb(0x50, 255, 255, 255)), StrokeThickness = 1 });
             return g;
         }
@@ -582,8 +613,7 @@ namespace MizuEngine
             if (t == null || t.Bg == null) return null;
             if (t.Bg == "custom")
             {
-                var img = Web(t.Img, decode);
-                return img == null ? null : new ImageBrush(img) { Stretch = Stretch.UniformToFill };
+                return string.IsNullOrEmpty(t.Img) ? null : WebBrush(t.Img, decode);
             }
             foreach (var (key, colors) in ThemeBackgrounds)
             {

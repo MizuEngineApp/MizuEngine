@@ -206,9 +206,8 @@ namespace MizuEngine
         {
             var b = new Border { Width = size + 8, Height = size + 8, CornerRadius = new CornerRadius((size + 8) * 0.28), BorderThickness = new Thickness(4) };
             b.SetResourceReference(Border.BorderBrushProperty, "WinBg");
-            var img = UI.Web(c.AvatarUrl, (int)(size * 2));
             var inner = new Border { CornerRadius = new CornerRadius(size * 0.26) };
-            if (img != null) inner.Background = new ImageBrush(img) { Stretch = Stretch.UniformToFill };
+            if (!string.IsNullOrEmpty(c.AvatarUrl)) inner.Background = UI.WebBrush(c.AvatarUrl, (int)(size * 2.5), Stretch.Fill, square: true);
             else
             {
                 inner.Background = (Brush)UI.Owner.FindResource("LogoBrush");

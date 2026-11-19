@@ -1,4 +1,4 @@
-// MizuEngine © 2026 rainy (t.me/MrRainthisisme). Все права защищены. Копировать код и выпускать изменённые версии запрещено — см. LICENSE.
+﻿// MizuEngine © 2026 rainy (t.me/MrRainthisisme). Все права защищены. Копировать код и выпускать изменённые версии запрещено — см. LICENSE.
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -107,6 +107,28 @@ namespace MizuEngine
             _sh = Native.GetSystemMetrics(1);
         }
 
+        DateTime _beganAt;
+
+        /// <summary>Самопроверка (из Shell раз в 4 с): анимация идёт подозрительно долго — сбрасываем, окно не должно застрять.</summary>
+        public void Unstick()
+        {
+            if (_active && (DateTime.UtcNow - _beganAt).TotalSeconds > 4) Abort();
+            if (!_active && _h != IntPtr.Zero && !IsVisible) { Show(); SetIdle(); }   // окно анимации кто-то спрятал — возвращаем
+        }
+
+        /// <summary>После сбоя Windows: заново узнаём размеры экранов и ставим окно анимации в исходное состояние.</summary>
+        public void Recover()
+        {
+            try
+            {
+                if (_active) Abort();
+                UpdateScreen();
+                if (!IsVisible) Show();
+                SetIdle();
+            }
+            catch (Exception e) { Settings.Log(e); }
+        }
+
         void SetIdle() { if (_h != IntPtr.Zero) DockNative.SetWindowRgn(_h, DockNative.CreateRectRgn(0, 0, 0, 0), true); }
 
         void SetVisible() { if (_h != IntPtr.Zero) DockNative.SetWindowRgn(_h, DockNative.CreateRectRgn(0, 0, _bw, _bh), false); }
@@ -189,7 +211,13 @@ namespace MizuEngine
             if (frame.Width < 60 || frame.Height < 40) return false;
             var mon = Monitors.BoundsOf(frame);
             double icx = (icon.Left + icon.Right) / 2, icy = (icon.Top + icon.Bottom) / 2;
-            if (icx < mon.Left || icx > mon.Right || icy < mon.Top || icy > mon.Bottom) return false;
+            if (icx < mon.Left || icx > mon.Right || icy < mon.Top || icy > mon.Bottom)
+            {
+                // Значок на другом мониторе (окно перетащили, а док ещё не обновился) — летим вниз по центру монитора окна
+                double s = Math.Max(24, Math.Min(64, icon.Width));
+                icon = new Rect((mon.Left + mon.Right) / 2.0 - s / 2, mon.Bottom - s - 14, s, s);
+                up = false;
+            }
 
             _target = hwnd;
             _up = up;
@@ -207,6 +235,7 @@ namespace MizuEngine
             _cam.Width = _bw;
             _cam.Position = new Point3D(_bx + _bw / 2.0, -(_by + _bh / 2.0), 10);
             _active = true;
+            _beganAt = DateTime.UtcNow;
             return true;
         }
 
@@ -712,6 +741,20 @@ namespace MizuEngine
             if (!Native.SystemParametersInfo(0x48, 8, ref ai, 0)) return;
             _off = true;
             if (ai.iMinAnimate == 0) return;   // у пользователя она и так выключена
+            if (s.SavedMinAnimate < 0) { s.SavedMinAnimate = 1; s.Save(); }
+            ai.iMinAnimate = 0;
+            Native.SystemParametersInfo(0x49, 8, ref ai, 0);
+        }
+
+        /// <summary>
+        /// Самопроверка: если системную анимацию сворачивания кто-то включил обратно (другой экземпляр программы,
+        /// «Параметры» Windows) — выключаем снова, иначе играли бы две анимации или наша терялась.
+        /// </summary>
+        public static void Ensure(Settings s)
+        {
+            if (!_off) { Disable(s); return; }
+            var ai = new Native.ANIMATIONINFO { cbSize = 8 };
+            if (!Native.SystemParametersInfo(0x48, 8, ref ai, 0) || ai.iMinAnimate == 0) return;
             if (s.SavedMinAnimate < 0) { s.SavedMinAnimate = 1; s.Save(); }
             ai.iMinAnimate = 0;
             Native.SystemParametersInfo(0x49, 8, ref ai, 0);

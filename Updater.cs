@@ -19,8 +19,8 @@ namespace MizuEngine
     /// Если нашлась — главное окно при открытии показывает плашку по центру, а трей присылает уведомление.
     /// На плашке два пути: «Обновить сейчас» (MizuEngine сам скачивает MizuEngine.exe из релиза,
     /// проверяет подпись rainy и перезапускается) или «Страница на GitHub» (браузер, всё вручную).
-    /// Плашку можно закрыть крестиком — тогда она сама не всплывает до следующего запуска
-    /// (или пока не выйдет ещё более новая версия).
+    /// Плашку можно закрыть крестиком — она снова появится при следующем открытии окна и после следующей
+    /// проверки (раз в 2 часа). Пока окно закрыто, о новой версии сообщает Dynamic Island.
     /// Если интернета нет — плашка прячется и проверка повторяется через 5 минут.
     /// </summary>
     internal static class Updater
@@ -49,15 +49,6 @@ namespace MizuEngine
         public static DateTime LastCheck { get; private set; }
         /// <summary>Идёт скачивание и установка.</summary>
         public static bool Installing { get; private set; }
-
-        /// <summary>Версия, плашку которой закрыли крестиком (только до выхода из программы).</summary>
-        public static Version Dismissed { get; private set; }
-
-        /// <summary>Плашку нужно показать сама: есть обновление и его ещё не откладывали в этом запуске.</summary>
-        public static bool ShouldNag => Status == State.Available && Latest != null && (Dismissed == null || Latest > Dismissed);
-
-        /// <summary>Крестик на плашке: напомнить при следующем запуске MizuEngine.</summary>
-        public static void Dismiss() { if (Latest != null) Dismissed = Latest; }
 
         public static Version Current { get; } =
             Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0);

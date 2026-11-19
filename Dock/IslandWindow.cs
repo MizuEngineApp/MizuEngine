@@ -165,6 +165,9 @@ namespace MizuEngine
         public void Unpark(IntPtr hwnd) => _view.Unpark(hwnd);
 
         /// <summary>Сообщение MizuEngine: капсула раскрывается с аватаркой и текстом.</summary>
+        /// <summary>Можно ли сейчас показать уведомление в капсуле (включены Island и уведомления).</summary>
+        public bool CanNotify => _s.IslandOn && _s.IslandNotify;
+
         public void Notify(string title, string text, string avatarUrl, Action click = null)
         {
             if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(() => Notify(title, text, avatarUrl, click))); return; }
@@ -204,6 +207,7 @@ namespace MizuEngine
         string _aText;          // статус агента Muzule (null — агент не работает)
         Action _aClick;
         ImageSource _nAvatar;
+        string _nAvatarUrl;
         Action _nClick;
         Rect _prev, _play, _next, _art;
         readonly List<Rect> _parkedRects = new List<Rect>();
@@ -261,8 +265,9 @@ namespace MizuEngine
             _nTitle = title;
             _nText = text?.Replace('\n', ' ').Replace('\r', ' ');
             _nClick = click;
-            _nAvatar = UI.Web(avatarUrl, 92);
-            if (_nAvatar is BitmapImage bi && bi.IsDownloading) bi.DownloadCompleted += (o, e) => InvalidateVisual();
+            _nAvatar = null;
+            _nAvatarUrl = avatarUrl;
+            ImageCache.Load(avatarUrl, 96, true, bmp => { if (_nAvatarUrl == avatarUrl) { _nAvatar = bmp; InvalidateVisual(); } });
             _notifyUntil = DateTime.UtcNow.AddSeconds(4.5);
             Refresh();
             Kick(40, 10);

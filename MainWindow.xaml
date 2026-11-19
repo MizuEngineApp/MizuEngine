@@ -771,6 +771,15 @@
                             </Border>
 
                             <DockPanel x:Name="WeFound" Grid.Row="1" Margin="0,18,0,0" Visibility="Collapsed">
+                                <!-- На какой монитор ставить обои: схема мониторов с текущими обоями (видна, если мониторов больше одного) -->
+                                <Border x:Name="WeMonPanel" DockPanel.Dock="Top" Style="{StaticResource Panel}" Margin="0,0,14,14" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock Text="{DynamicResource we.where}" FontWeight="SemiBold"/>
+                                        <TextBlock x:Name="WeMonHint" Style="{StaticResource Sub}" FontSize="12" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                        <Canvas x:Name="WeMonCanvas" Height="150" Margin="0,14,0,0" HorizontalAlignment="Left" ClipToBounds="False"/>
+                                        <WrapPanel x:Name="WeMonChips" Margin="0,14,0,0"/>
+                                    </StackPanel>
+                                </Border>
                                 <DockPanel DockPanel.Dock="Top" Margin="0,0,14,14">
                                     <Button DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="{DynamicResource we.refresh}" Click="RefreshWe_Click"/>
                                     <TextBlock x:Name="WeCount" Foreground="{DynamicResource SubText}" VerticalAlignment="Center"/>
@@ -1250,9 +1259,9 @@
                             Padding="34,30" MaxWidth="500" RenderTransformOrigin="0.5,0.5" Effect="{DynamicResource CardShadow}">
                         <Border.RenderTransform><ScaleTransform/></Border.RenderTransform>
                         <Grid>
-                        <!-- Крестик: закрыть плашку, обновиться позже -->
+                        <!-- Крестик: закрыть плашку, обновиться позже (она вернётся при следующем открытии окна или через 2 часа) -->
                         <Button x:Name="GateCloseBtn" Style="{StaticResource CaptionBtn}" Content="&#xE8BB;" HorizontalAlignment="Right" VerticalAlignment="Top"
-                                Margin="0,-16,-20,0" Click="GateClose_Click" ToolTip="{DynamicResource upd.later}" Panel.ZIndex="1"/>
+                                Foreground="{DynamicResource Text}" Margin="0,-18,-22,0" Click="GateClose_Click" ToolTip="{DynamicResource upd.later}" Panel.ZIndex="1"/>
                         <StackPanel>
                             <Border Width="64" Height="64" CornerRadius="20" HorizontalAlignment="Center" Background="{DynamicResource CardBg}"
                                     BorderBrush="{DynamicResource CardRim}" BorderThickness="1">
@@ -1280,9 +1289,6 @@
                                 <Button x:Name="GateInstallBtn" Style="{StaticResource PrimaryButton}" Content="{DynamicResource upd.install}" HorizontalAlignment="Center" Click="UpdInstall_Click"/>
                                 <Button Style="{StaticResource GlassButton}" HorizontalAlignment="Center" HorizontalContentAlignment="Center" Padding="18,9" Margin="0,10,0,0" Click="UpdOpen_Click">
                                     <TextBlock Text="{DynamicResource upd.github}" FontWeight="SemiBold"/>
-                                </Button>
-                                <Button Style="{StaticResource GlassButton}" HorizontalAlignment="Center" HorizontalContentAlignment="Center" Padding="18,9" Margin="0,10,0,0" Click="GateClose_Click">
-                                    <TextBlock Text="{DynamicResource upd.later}" FontWeight="SemiBold"/>
                                 </Button>
                             </StackPanel>
                             <!-- Скачивание обновления: полоска и проценты -->

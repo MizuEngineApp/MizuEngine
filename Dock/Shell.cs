@@ -58,6 +58,7 @@ namespace MizuEngine
                     SyncAnimations();
                 }
                 catch (Exception e) { Settings.Log(e); }
+                StartHealth();
                 Dispatcher.Run();
             })
             { IsBackground = true, Name = "MizuEngine shell" };
@@ -67,6 +68,54 @@ namespace MizuEngine
         }
 
         public static void Run(Action a) => D?.BeginInvoke(a);
+
+        // ================== самопроверка: анимации не должны пропадать ==================
+
+        static DispatcherTimer _health;
+        static int _healthTicks;
+
+        /// <summary>
+        /// Раз в 4 секунды проверяем, что анимации сворачивания на месте: перехват сворачивания включён,
+        /// системная анимация Windows выключена (её мог вернуть другой экземпляр программы или сама Windows),
+        /// окно анимации не «залипло». Раз в 2 минуты перехват переподключаем заново — после сна, блокировки
+        /// или перезапуска Проводника Windows иногда тихо перестаёт присылать события.
+        /// </summary>
+        static void StartHealth()
+        {
+            _health = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(4) };
+            _health.Tick += (o, e) =>
+            {
+                try
+                {
+                    bool want = (Dock != null && Dock.Enabled && S.DockAnimations) || (Island != null && Island.FliesUp);
+                    if (!want) return;
+                    _healthTicks++;
+                    if (_hook == IntPtr.Zero || _healthTicks % 30 == 0) { StopWatcher(); StartWatcher(); }
+                    SysAnim.Ensure(S);
+                    Anim?.Unstick();
+                }
+                catch (Exception ex) { Settings.Log(ex); }
+            };
+            _health.Start();
+        }
+
+        /// <summary>Восстановление после сбоев Windows (сон, блокировка, перезапуск Проводника или видеодрайвера).</summary>
+        public static void Recover()
+        {
+            if (D == null) return;
+            if (!D.CheckAccess()) { D.BeginInvoke(new Action(Recover)); return; }
+            try
+            {
+                Dock?.Recover();
+                Anim?.Recover();
+                Island?.Apply();
+                StopWatcher();
+                SyncAnimations();
+                SysAnim.Ensure(S);
+                RaiseChrome();
+            }
+            catch (Exception e) { Settings.Log(e); }
+        }
 
         /// <summary>Док и Dynamic Island — выше окна анимации: воронка проходит под ними и «ныряет» в значок.</summary>
         public static void RaiseChrome()
@@ -121,6 +170,9 @@ namespace MizuEngine
                 var r = Island.ScreenRect();
                 if (!r.IsEmpty) return (r, true);
             }
+            // Значка окна в доке нет (окно только что открылось, док на миг перестраивался) — летим в середину дока,
+            // чтобы анимация не пропадала
+            if (dockIcon.IsEmpty && Dock != null && Dock.Enabled && S.DockAnimations) dockIcon = Dock.FallbackIcon(hwnd);
             return (dockIcon, false);
         }
 

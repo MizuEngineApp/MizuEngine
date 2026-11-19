@@ -40,6 +40,8 @@ namespace MizuEngine
             // «MizuEngine.exe --quit» просит запущенную копию аккуратно закрыться (так делает build.bat перед сборкой)
             using var quit = new EventWaitHandle(false, EventResetMode.AutoReset, "MizuEngine_Quit");
             if (Array.IndexOf(args, "--quit") >= 0) { quit.Set(); return; }
+            // «Сторож»: второй маленький процесс, который возвращает панель задач и перезапускает MizuEngine после сбоя
+            if (Array.IndexOf(args, "--watchdog") >= 0) { Watchdog.Run(args); return; }
 
             // Официальная сборка проверяет свою подпись: изменённый («взломанный») exe не запускается (Security/Guard.cs)
             if (!Guard.Check())
@@ -52,7 +54,8 @@ namespace MizuEngine
             using var show = new EventWaitHandle(false, EventResetMode.AutoReset, "MizuEngine_Show");
             using var mutex = new Mutex(true, "MizuEngine_SingleInstance", out bool first);
             bool updated = Array.IndexOf(args, "--updated") >= 0;   // запуск сразу после «Обновить сейчас»
-            if (!first && (updated || Array.IndexOf(args, "--elevated-restart") >= 0 || Array.IndexOf(args, "--restart") >= 0))
+            bool recovered = Array.IndexOf(args, "--recovered") >= 0;   // перезапуск сторожем после сбоя
+            if (!first && (updated || recovered || Array.IndexOf(args, "--elevated-restart") >= 0 || Array.IndexOf(args, "--restart") >= 0))
             {
                 // Перезапуск (от администратора, после сброса или обновления): ждём, пока старая копия закроется
                 try { first = mutex.WaitOne(15000); } catch (AbandonedMutexException) { first = true; }
@@ -98,7 +101,9 @@ namespace MizuEngine
             void RestoreTaskbar() { try { Taskbar.Restore(settings); SysAnim.Restore(settings); } catch { } }
             AppDomain.CurrentDomain.UnhandledException += (s, e) => { if (e.ExceptionObject is Exception ex) Settings.Log(ex); RestoreTaskbar(); };
             AppDomain.CurrentDomain.ProcessExit += (s, e) => { RestoreTaskbar(); CursorPacks.Restore(); };
-            app.SessionEnding += (s, e) => fx.Shutdown();
+            app.SessionEnding += (s, e) => { Watchdog.MarkCleanExit(); fx.Shutdown(); };
+            Recovery.Start();    // сон, блокировка, смена мониторов — док, трей и анимации восстанавливаются сами
+            Watchdog.Start();    // упадём — сторож вернёт панель задач и перезапустит программу
 
             // Главное окно создаётся, только когда его открывают, и полностью удаляется при закрытии в трей —
             // так в фоне программа занимает минимум памяти
@@ -121,6 +126,7 @@ namespace MizuEngine
 
             void Exit()
             {
+                Watchdog.MarkCleanExit();   // это обычный выход, а не сбой — сторожу перезапускать не нужно
                 Online.GoOffline();   // друзья сразу видят серый кружок
                 Muzule.StopAll();     // агенты Muzule прерывают запросы (что успели — сохранено)
                 LiveWallpaper.Stop();
@@ -142,16 +148,39 @@ namespace MizuEngine
             MizuHotkeys.Init(fx, settings, Open);
             _exit = Exit;
 
-            // Обновления: проверка при запуске и каждые 2 часа. Окно закрыто (программа в трее) — сообщаем уведомлением
+            // Обновления: проверка при запуске и каждые 2 часа. Окно открыто — там плашка; закрыто (программа в трее) —
+            // после каждой проверки уведомление в Dynamic Island (нажал — открывается окно с плашкой). Island выключен — трей
             Version notified = null;
             Updater.Changed += () =>
             {
-                if (Updater.Status != Updater.State.Available || main != null || Equals(notified, Updater.Latest)) return;
-                notified = Updater.Latest;
-                tray.Notify(Loc.T("upd.title"), string.Format(Loc.T("upd.tray"), Updater.Short(Updater.Latest)));
+                if (Updater.Status != Updater.State.Available) return;
+                if (main != null && main.IsVisible && main.WindowState != WindowState.Minimized) return;
+                string text = string.Format(Loc.T("upd.island"), Updater.Short(Updater.Latest));
+                if (Shell.Island != null && Shell.Island.CanNotify)
+                    Shell.Island.Notify(Loc.T("upd.title"), text, "pack://application:,,,/Assets/MizuEngine_logo_128.png",
+                                        () => app.Dispatcher.BeginInvoke(new Action(Open)));
+                else if (!Equals(notified, Updater.Latest))
+                {
+                    notified = Updater.Latest;
+                    tray.Notify(Loc.T("upd.title"), string.Format(Loc.T("upd.tray"), Updater.Short(Updater.Latest)));
+                }
             };
             Updater.Start();
             if (updated) tray.Notify(Loc.T("upd.done.t"), string.Format(Loc.T("upd.done"), Updater.Short(Updater.Current)));
+            if (recovered)
+            {
+                // Перезапустились после сбоя — коротко сообщаем, что всё восстановлено
+                var rt = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+                rt.Tick += (s, e) =>
+                {
+                    rt.Stop();
+                    if (Shell.Island != null && Shell.Island.CanNotify)
+                        Shell.Island.Notify(Loc.T("crash.title"), Loc.T("crash.text"), "pack://application:,,,/Assets/MizuEngine_logo_128.png",
+                                            () => app.Dispatcher.BeginInvoke(new Action(Open)));
+                    else tray.Notify(Loc.T("crash.title"), Loc.T("crash.text"));
+                };
+                rt.Start();
+            }
 
             // Mizu Plus: подписка появилась или закончилась — включаем/выключаем то, что работает и без окна
             Plus.Changed += () =>

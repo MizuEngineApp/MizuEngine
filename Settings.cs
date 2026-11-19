@@ -40,6 +40,10 @@ namespace MizuEngine
         public bool DockTray { get; set; } = true;           // значки трея внутри дока
         public bool DockAllMonitors { get; set; } = true;    // свой док на каждом мониторе (с 0.11); второй монитор подключили — док там сразу
         public List<string> DockMonitorsOff { get; set; } = new List<string>();   // мониторы (MonitorInfo.Id), где дока не нужно
+
+        // Wallpaper Engine: на какой монитор ставить обои ("all" — на все, иначе MonitorInfo.Id) и что сейчас стоит на каждом (для схемы)
+        public string WeTarget { get; set; } = "all";
+        public Dictionary<string, string> WePreviews { get; set; } = new Dictionary<string, string>();
         public int SavedMinAnimate { get; set; } = -1;       // системная анимация сворачивания была включена (1) — вернуть при выходе
 
         // Dynamic Island
@@ -158,6 +162,8 @@ namespace MizuEngine
             DockMagnify = Math.Clamp(DockMagnify, 1.0, 2.2);
             DockTransparency = Math.Clamp(DockTransparency, 0, 100);
             DockMonitorsOff ??= new List<string>();
+            WePreviews ??= new Dictionary<string, string>();
+            if (string.IsNullOrEmpty(WeTarget)) WeTarget = "all";
             Flakes = Math.Clamp(Flakes, 50, 1500);
             if (Array.IndexOf(Weathers, Weather) < 0) Weather = "snow";
             if (Weather == "custom" && !File.Exists(CustomParticle)) Weather = "snow";

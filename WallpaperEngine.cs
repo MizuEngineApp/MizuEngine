@@ -87,18 +87,30 @@ namespace MizuEngine
         }
 
         static readonly object Gate = new object();
-        static string _queued;
+        // Очередь — по одной последней команде на каждый монитор (null — без указания монитора)
+        static readonly Dictionary<int, string> _queued = new Dictionary<int, string>();
         static bool _busy;
 
         /// <summary>
         /// Просим сам Wallpaper Engine поставить обои (все типы: видео, сцены, веб). Работает в фоне.
         /// Если быстро нажать несколько обоев подряд, применятся последние — команды не копятся в очередь.
         /// </summary>
-        public static void ApplyAsync(string exe, string target, Action<bool> done)
+        public static void ApplyAsync(string exe, string target, Action<bool> done) => ApplyAsync(exe, target, null, done);
+
+        /// <summary>
+        /// То же, но на выбранные мониторы (номера мониторов Wallpaper Engine, см. WeIndex). null — как раньше, без номера.
+        /// На каждый монитор помним только последние выбранные обои, поэтому на двух мониторах можно поставить разные.
+        /// </summary>
+        public static void ApplyAsync(string exe, string target, int[] monitors, Action<bool> done)
         {
             lock (Gate)
             {
-                _queued = target;
+                if (monitors == null || monitors.Length == 0) { _queued.Clear(); _queued[-1] = target; }
+                else
+                {
+                    _queued.Remove(-1);
+                    foreach (int m in monitors) _queued[m] = target;
+                }
                 if (_busy) return;
                 _busy = true;
             }
@@ -107,20 +119,38 @@ namespace MizuEngine
                 bool ok = true;
                 while (true)
                 {
+                    int mon;
                     string t;
                     lock (Gate)
                     {
-                        t = _queued;
-                        _queued = null;
-                        if (t == null) { _busy = false; break; }
+                        if (_queued.Count == 0) { _busy = false; break; }
+                        mon = _queued.Keys.Min();
+                        t = _queued[mon];
+                        _queued.Remove(mon);
                     }
-                    ok = Send(exe, t);
+                    ok &= Send(exe, t, mon);
                 }
                 done?.Invoke(ok);
             });
         }
 
-        static bool Send(string exe, string target)
+        /// <summary>
+        /// Номер монитора для Wallpaper Engine (-monitor N, с нуля): WE считает мониторы в порядке их номеров в Windows
+        /// (\\.\DISPLAY1, \\.\DISPLAY2…), а не «главный первым».
+        /// </summary>
+        public static int WeIndex(MonitorInfo m, List<MonitorInfo> all)
+        {
+            var order = all.OrderBy(x => DisplayNumber(x.Device)).ThenBy(x => x.Bounds.Left).ToList();
+            return Math.Max(0, order.FindIndex(x => x.Device == m.Device));
+        }
+
+        static int DisplayNumber(string device)
+        {
+            var mt = Regex.Match(device ?? "", @"(\d+)\s*$");
+            return mt.Success && int.TryParse(mt.Groups[1].Value, out int n) ? n : 999;
+        }
+
+        static bool Send(string exe, string target, int monitor = -1)
         {
             try
             {
@@ -137,7 +167,8 @@ namespace MizuEngine
                     Thread.Sleep(2500);
                 }
 
-                using var p = Process.Start(new ProcessStartInfo(exe, $"-control openWallpaper -file \"{target}\"")
+                string args = $"-control openWallpaper -file \"{target}\"" + (monitor >= 0 ? " -monitor " + monitor : "");
+                using var p = Process.Start(new ProcessStartInfo(exe, args)
                 {
                     UseShellExecute = false, WorkingDirectory = dir, CreateNoWindow = true
                 });

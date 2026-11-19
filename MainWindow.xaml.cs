@@ -1,5 +1,7 @@
 ﻿// MizuEngine © 2026 rainy (t.me/MrRainthisisme). Все права защищены. Копировать код и выпускать изменённые версии запрещено — см. LICENSE.
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
@@ -747,6 +749,7 @@ namespace MizuEngine
             WeFound.Visibility = exe != null ? Visibility.Visible : Visibility.Collapsed;
             if (exe == null) return;
 
+            BuildWeMonitors();
             var items = WallpaperEngine.Scan(libraries);
             _weCount = items.Count;
             UpdateWeCount();
@@ -796,12 +799,170 @@ namespace MizuEngine
                 _weSelected = picture;
                 Motion.Pop(picture, 1.04);
                 ShowToast(Loc.T("we.applying"));
-                WallpaperEngine.ApplyAsync(exe, item.Target, ok => Dispatcher.BeginInvoke(new Action(() =>
+                // На выбранные мониторы (схема сверху); один монитор — как раньше
+                WallpaperEngine.ApplyAsync(exe, item.Target, WeTargetIndexes(), ok => Dispatcher.BeginInvoke(new Action(() =>
                 {
                     if (IsLoaded) ShowToast(Loc.T(ok ? "we.applied" : "we.failed"));
                 })));
+                RememberWePreview(item.Preview);
             };
             return tile;
+        }
+
+        // ---------- на какой монитор ставить обои ----------
+
+        List<MonitorInfo> _weMons = new List<MonitorInfo>();
+        readonly Dictionary<string, Border> _weMonBoxes = new Dictionary<string, Border>();
+        readonly Dictionary<string, Border> _weMonPictures = new Dictionary<string, Border>();
+
+        /// <summary>
+        /// Схема мониторов над обоями — как в «Параметры → Дисплей»: мониторы в настоящем расположении и размерах,
+        /// на каждом — его текущие обои. Нажал на монитор (или «Все мониторы») — следующие обои встанут туда.
+        /// Так на двух мониторах легко поставить разные обои. Один монитор — схема не показывается.
+        /// </summary>
+        void BuildWeMonitors()
+        {
+            try { _weMons = Monitors.All(); } catch (Exception ex) { Settings.Log(ex); _weMons = new List<MonitorInfo>(); }
+            WeMonCanvas.Children.Clear();
+            WeMonChips.Children.Clear();
+            _weMonBoxes.Clear();
+            _weMonPictures.Clear();
+            if (_weMons.Count < 2) { WeMonPanel.Visibility = Visibility.Collapsed; return; }
+            WeMonPanel.Visibility = Visibility.Visible;
+            if (_s.WeTarget != "all" && !_weMons.Exists(m => m.Id == _s.WeTarget)) _s.WeTarget = "all";
+
+            int l = _weMons.Min(m => m.Bounds.Left), t = _weMons.Min(m => m.Bounds.Top);
+            int r = _weMons.Max(m => m.Bounds.Right), b = _weMons.Max(m => m.Bounds.Bottom);
+            double k = Math.Min(440.0 / Math.Max(1, r - l), 150.0 / Math.Max(1, b - t));
+            WeMonCanvas.Width = (r - l) * k;
+            WeMonCanvas.Height = (b - t) * k;
+            for (int i = 0; i < _weMons.Count; i++)
+            {
+                var m = _weMons[i];
+                var box = WeMonitorTile(m, i + 1, Math.Max(20, m.Bounds.Width * k - 6), Math.Max(20, m.Bounds.Height * k - 6));
+                Canvas.SetLeft(box, (m.Bounds.Left - l) * k + 3);
+                Canvas.SetTop(box, (m.Bounds.Top - t) * k + 3);
+                WeMonCanvas.Children.Add(box);
+                Anim.To(box, OpacityProperty, 1, 380, from: 0, delayMs: i * 70);
+            }
+
+            WeMonChips.Children.Add(WeChip(Loc.T("we.allmon"), "all"));
+            for (int i = 0; i < _weMons.Count; i++) WeMonChips.Children.Add(WeChip($"{i + 1} · {WeMonName(_weMons[i], i + 1)}", _weMons[i].Id));
+            PaintWeSelection(false);
+        }
+
+        static string WeMonName(MonitorInfo m, int n) => string.IsNullOrWhiteSpace(m?.Name) ? string.Format(Loc.T("dock.allmon.mon"), n) : m.Name;
+
+        Border WeMonitorTile(MonitorInfo m, int n, double w, double h)
+        {
+            var picture = new Border { CornerRadius = new CornerRadius(6) };
+            picture.SetResourceReference(Border.BackgroundProperty, "TrackOff");
+            _weMonPictures[m.Id] = picture;
+            if (_s.WePreviews.TryGetValue(m.Id, out var path)) SetWeMonPicture(picture, path, false);
+
+            var shade = new Border
+            {
+                CornerRadius = new CornerRadius(6), IsHitTestVisible = false,
+                Background = new LinearGradientBrush(Color.FromArgb(0, 0, 0, 0), Color.FromArgb(0x90, 0, 0, 0), 90)
+            };
+            var num = new Border
+            {
+                Width = 22, Height = 22, CornerRadius = new CornerRadius(11), Margin = new Thickness(6),
+                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
+                Background = new SolidColorBrush(Color.FromArgb(0x99, 0x10, 0x14, 0x20)),
+                Child = new TextBlock { Text = n.ToString(), Foreground = Brushes.White, FontSize = 12, FontWeight = FontWeights.Bold, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
+            };
+            var name = new TextBlock
+            {
+                Text = WeMonName(m, n) + (m.Primary ? "  ★" : ""), Foreground = Brushes.White, FontSize = 11.5, FontWeight = FontWeights.SemiBold,
+                TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(8, 0, 8, 6), VerticalAlignment = VerticalAlignment.Bottom
+            };
+            var g = new Grid();
+            g.Children.Add(picture);
+            g.Children.Add(shade);
+            g.Children.Add(num);
+            if (h >= 44) g.Children.Add(name);
+
+            var box = new Border
+            {
+                Width = w, Height = h, CornerRadius = new CornerRadius(9), BorderThickness = new Thickness(2.5), Padding = new Thickness(2),
+                Child = g, Cursor = System.Windows.Input.Cursors.Hand, BorderBrush = Brushes.Transparent, ToolTip = WeMonName(m, n),
+                Background = Brushes.Transparent
+            };
+            box.MouseLeftButtonUp += (o, e) => SelectWeTarget(m.Id);
+            _weMonBoxes[m.Id] = box;
+            return box;
+        }
+
+        void SetWeMonPicture(Border picture, string path, bool animate)
+        {
+            Task.Run(() => LoadPreview(path)).ContinueWith(task =>
+            {
+                if (task.Result == null) return;
+                picture.Background = task.Result;
+                if (animate) Anim.To(picture, OpacityProperty, 1, 320, from: 0.2);
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        RadioButton WeChip(string text, string id)
+        {
+            var r = new RadioButton
+            {
+                Style = (Style)FindResource("Pill"), GroupName = "wemon", Content = text, Tag = id,
+                Margin = new Thickness(0, 0, 8, 8), IsChecked = _s.WeTarget == id
+            };
+            r.Click += (o, e) => SelectWeTarget(id);
+            return r;
+        }
+
+        void SelectWeTarget(string id)
+        {
+            bool changed = _s.WeTarget != id;
+            _s.WeTarget = id;
+            if (changed) _s.Save();
+            PaintWeSelection(true);
+        }
+
+        /// <summary>Выбранные мониторы — с рамкой цвета темы и яркие, остальные — приглушённые.</summary>
+        void PaintWeSelection(bool animate)
+        {
+            bool all = _s.WeTarget == "all";
+            foreach (var kv in _weMonBoxes)
+            {
+                bool on = all || kv.Key == _s.WeTarget;
+                if (on) kv.Value.SetResourceReference(Border.BorderBrushProperty, "Accent");
+                else kv.Value.BorderBrush = Brushes.Transparent;
+                if (animate) Anim.To(kv.Value.Child as UIElement, OpacityProperty, on ? 1 : 0.5, 240);
+                else ((UIElement)kv.Value.Child).Opacity = on ? 1 : 0.5;
+                if (animate && on) Motion.Pop(kv.Value, 1.04);
+            }
+            foreach (var c in WeMonChips.Children) if (c is RadioButton rb) rb.IsChecked = (string)rb.Tag == _s.WeTarget;
+            var target = _weMons.Find(m => m.Id == _s.WeTarget);
+            WeMonHint.Text = all || target == null
+                ? Loc.T("we.where.all")
+                : string.Format(Loc.T("we.where.one"), WeMonName(target, _weMons.IndexOf(target) + 1));
+        }
+
+        /// <summary>Номера мониторов для Wallpaper Engine (null — один монитор, команда без номера, как раньше).</summary>
+        int[] WeTargetIndexes()
+        {
+            if (_weMons == null || _weMons.Count < 2) return null;
+            if (_s.WeTarget == "all") return _weMons.Select(m => WallpaperEngine.WeIndex(m, _weMons)).Distinct().ToArray();
+            var one = _weMons.Find(x => x.Id == _s.WeTarget);
+            return one == null ? null : new[] { WallpaperEngine.WeIndex(one, _weMons) };
+        }
+
+        /// <summary>Запомнить, какие обои теперь стоят на выбранных мониторах, и сразу показать их на схеме.</summary>
+        void RememberWePreview(string preview)
+        {
+            if (_weMons == null || _weMons.Count < 2 || string.IsNullOrEmpty(preview)) return;
+            foreach (var m in _weMons)
+            {
+                if (_s.WeTarget != "all" && m.Id != _s.WeTarget) continue;
+                _s.WePreviews[m.Id] = preview;
+                if (_weMonPictures.TryGetValue(m.Id, out var pic)) SetWeMonPicture(pic, preview, true);
+            }
+            _s.Save();
         }
 
         static Brush LoadPreview(string path)
@@ -927,7 +1088,8 @@ namespace MizuEngine
         void OnUpdaterChanged()
         {
             RefreshUpdateUi();
-            if (Updater.Status == Updater.State.Available) { if (Updater.ShouldNag) ShowGate(); }   // закрыли крестиком — до следующего запуска сама не всплывает
+            // Плашка появляется при каждом открытии окна и после каждой проверки (раз в 2 часа), даже если её закрывали крестиком
+            if (Updater.Status == Updater.State.Available) ShowGate();
             else if (Updater.Status != Updater.State.Checking) HideGate();   // во время повторной проверки плашка не мигает
         }
 
@@ -990,11 +1152,10 @@ namespace MizuEngine
             ShowToast(Loc.T("upd.openfail"));
         }
 
-        /// <summary>Крестик или «Позже» на плашке: прячем её, интерфейс снова чёткий. Напомним при следующем запуске.</summary>
+        /// <summary>Крестик на плашке: прячем её, интерфейс снова чёткий. Напомним при следующем открытии окна или через 2 часа.</summary>
         void GateClose_Click(object sender, RoutedEventArgs e)
         {
             if (Updater.Installing) return;
-            Updater.Dismiss();
             HideGate();
         }
 

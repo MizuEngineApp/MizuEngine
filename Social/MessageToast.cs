@@ -150,19 +150,7 @@ namespace MizuEngine
                 FontSize = size * 0.42, FontWeight = FontWeights.Bold, Foreground = Brushes.White,
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
             });
-            if (UI.Web(p?.AvatarUrl, (int)(size * 2)) is BitmapImage img)
-            {
-                var face = new Ellipse { Opacity = 0 };
-                g.Children.Add(face);
-                void Paint()
-                {
-                    if (img.PixelWidth <= 1) return;
-                    face.Fill = new ImageBrush(UI.Square(img)) { Stretch = Stretch.Fill };
-                    face.Opacity = 1;
-                }
-                if (img.IsDownloading) img.DownloadCompleted += (s, a) => Paint();
-                else Paint();
-            }
+            UI.AvatarFace(g, p?.AvatarUrl, size);
             return g;
         }
 

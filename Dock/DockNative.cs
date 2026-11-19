@@ -84,6 +84,25 @@ namespace MizuEngine
             return IntPtr.Zero;
         }
 
+        /// <summary>Открыто ли меню «Пуск» (или поиск) — тогда кнопка «Пуск» в доке его просто закрывает.</summary>
+        public static bool StartIsOpen()
+        {
+            try
+            {
+                IntPtr fg = Native.GetForegroundWindow();
+                if (fg == IntPtr.Zero) return false;
+                GetWindowThreadProcessId(fg, out uint pid);
+                string exe = ExePath(pid);
+                if (string.IsNullOrEmpty(exe)) return false;
+                string name = System.IO.Path.GetFileName(exe);
+                return name.Equals("StartMenuExperienceHost.exe", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("SearchHost.exe", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("ShellExperienceHost.exe", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("SearchApp.exe", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
         /// <summary>Заголовок окна без отправки сообщения самому окну: не зависает, даже если программа «не отвечает».</summary>
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int InternalGetWindowText(IntPtr h, StringBuilder sb, int max);
         [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);

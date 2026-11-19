@@ -48,6 +48,14 @@ namespace MizuEngine
 
         public IntPtr Handle => _h;
 
+        /// <summary>DWM перезапустился (сбой видеодрайвера, смена темы) — включаем размытие заново.</summary>
+        public void Reapply()
+        {
+            if (_h == IntPtr.Zero) return;
+            DockNative.EnableAcrylic(_h, _tint);
+            Apply();
+        }
+
         /// <summary>Чем прозрачнее док, тем слабее тёмный оттенок стекла.</summary>
         public void SetTransparency(int t)
         {
@@ -519,7 +527,7 @@ namespace MizuEngine
             switch (it.Kind)
             {
                 case DockKind.Start:
-                    DockNative.PressKeys(DockNative.VK_LWIN);
+                    OpenStart();
                     return;
                 case DockKind.Tray:
                     ToggleTray(it);
@@ -559,6 +567,53 @@ namespace MizuEngine
 
         /// <summary>Куда сворачивается окно: в этот значок, а если окно на другом мониторе — в значок дока того монитора.</summary>
         Rect IconForWindow(IntPtr h, DockItem it) => it.Away && _owner != null ? _owner.IconFor(h) : IconOnScreen(it);
+
+        /// <summary>
+        /// Кнопка «Пуск». Windows 11 открывает меню «Пуск» на главном мониторе (у панели задач второго монитора нет кнопки,
+        /// которую можно нажать программно), поэтому из дока любого монитора «Пуск» открывается на главном.
+        /// Повторное нажатие закрывает меню.
+        /// </summary>
+        void OpenStart() => DockNative.PressKeys(DockNative.VK_LWIN);
+
+        /// <summary>Середина дока в пикселях экрана — запасная цель для «джинна», если значка окна в доке нет.</summary>
+        public Rect PillOnScreen()
+        {
+            if (!_enabled || _hwnd == IntPtr.Zero) return Rect.Empty;
+            var pill = _view.Pill;
+            if (pill.IsEmpty || pill.Width < 4) return Rect.Empty;
+            try
+            {
+                double s = _s.DockSize;
+                var c = new Point(pill.X + pill.Width / 2, pill.Y + pill.Height / 2);
+                Point a = _view.PointToScreen(new Point(c.X - s / 2, c.Y - s / 2)), b = _view.PointToScreen(new Point(c.X + s / 2, c.Y + s / 2));
+                return new Rect(a, b);
+            }
+            catch (InvalidOperationException) { return Rect.Empty; }
+        }
+
+        /// <summary>
+        /// После сбоя Windows (перезапуск Проводника, видеодрайвера, выход из сна): заново резервируем место,
+        /// включаем стекло, ставим окно на место и поднимаем над окнами.
+        /// </summary>
+        public void Recover()
+        {
+            if (!_enabled) return;
+            try
+            {
+                Place();
+                if (_appbar) { UnregisterAppBar(); }
+                if (!_s.DockAutohide) RegisterAppBar();
+                if (_hwnd != IntPtr.Zero && _shellHook) { DockNative.DeregisterShellHookWindow(_hwnd); _shellHook = DockNative.RegisterShellHookWindow(_hwnd); }
+                _blur.Reapply();
+                _fsHidden = false;
+                Show();
+                if (_s.DockBlur) _blur.Show();
+                UpdateShape();
+                RaiseAbove();
+                Refresh();
+            }
+            catch (Exception e) { Settings.Log(e); }
+        }
 
         void MinimizeWindow(IntPtr h, DockItem it)
         {
@@ -742,10 +797,19 @@ namespace MizuEngine
             abd.uCallbackMessage = _abMsg;
             DockNative.SHAppBarMessage(DockNative.ABM_NEW, ref abd);
             _appbar = true;
-            SetAppBarPos();
+            _abSet = false;
+            SetAppBarPos(true);
         }
 
-        void SetAppBarPos()
+        Native.RECT _abRect;
+        bool _abSet;
+
+        /// <summary>
+        /// Резерв места внизу монитора. Ставим его, только если он правда изменился: иначе два дока на разных мониторах
+        /// «перекидывались» уведомлениями ABN_POSCHANGED, Windows без конца пересчитывал рабочую область —
+        /// ярлыки рабочего стола переезжали на другой монитор, а Проводник подтормаживал.
+        /// </summary>
+        void SetAppBarPos(bool force = false)
         {
             if (!_appbar) return;
             // Место резервируется внизу своего монитора — окна на нём разворачиваются до дока, а не под него
@@ -755,9 +819,13 @@ namespace MizuEngine
             var abd = DockNative.NewAppBar(_hwnd);
             abd.uEdge = DockNative.ABE_BOTTOM;
             abd.rc = new Native.RECT { Left = b.Left, Top = b.Bottom - reserve, Right = b.Right, Bottom = b.Bottom };
+            if (!force && _abSet && Same(abd.rc, _abRect)) return;
             DockNative.SHAppBarMessage(DockNative.ABM_QUERYPOS, ref abd);
             abd.rc.Top = abd.rc.Bottom - reserve;
+            if (!force && _abSet && Same(abd.rc, _abRect)) return;
             DockNative.SHAppBarMessage(DockNative.ABM_SETPOS, ref abd);
+            _abRect = abd.rc;
+            _abSet = true;
         }
 
         void UnregisterAppBar()
@@ -766,11 +834,21 @@ namespace MizuEngine
             var abd = DockNative.NewAppBar(_hwnd);
             DockNative.SHAppBarMessage(DockNative.ABM_REMOVE, ref abd);
             _appbar = false;
+            _abSet = false;
         }
+
+        static readonly uint TaskbarCreatedMsg = DockNative.RegisterWindowMessage("TaskbarCreated");
 
         IntPtr WndProc(IntPtr h, int msg, IntPtr w, IntPtr l, ref bool handled)
         {
-            if (_appbar && _abMsg != 0 && (uint)msg == _abMsg && w.ToInt64() == 1)   // ABN_POSCHANGED
+            if (TaskbarCreatedMsg != 0 && (uint)msg == TaskbarCreatedMsg)
+            {
+                // Проводник перезапустился (или упал): панель задач появилась заново — прячем её и восстанавливаем доки
+                if (IsPrimary) Dispatcher.BeginInvoke(new Action(() => _owner?.Recover()), DispatcherPriority.Background);
+            }
+            else if (msg == 0x031E)   // WM_DWMCOMPOSITIONCHANGED: DWM перезапустился — стекло нужно включить заново
+                Dispatcher.BeginInvoke(new Action(() => _blur.Reapply()));
+            else if (_appbar && _abMsg != 0 && (uint)msg == _abMsg && w.ToInt64() == 1)   // ABN_POSCHANGED
                 SetAppBarPos();
             else if (_shellMsg != 0 && (uint)msg == _shellMsg)
             {

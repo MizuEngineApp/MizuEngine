@@ -582,6 +582,7 @@ namespace MizuEngine
             ring.SetResourceReference(Border.BorderBrushProperty, "WinBg");
             ring.SetResourceReference(Border.BackgroundProperty, "WinBg");
             Motion.Hero(ring, "avatar:" + p.Id);
+            if (isMe) _headerRing = ring;   // сюда прилетит аватарка при переключении аккаунта
             if (isMe)
             {
                 UI.Hand(ring);
@@ -700,8 +701,18 @@ namespace MizuEngine
         static FrameworkElement Banner(string url, double height, Action change)
         {
             var banner = new Border { Height = height, CornerRadius = new CornerRadius(27, 27, 0, 0) };
-            var img = UI.Web(url, 1000);
-            if (img != null) banner.Background = new ImageBrush(img) { Stretch = Stretch.UniformToFill };
+            if (!string.IsNullOrEmpty(url))
+            {
+                // Пока баннер качается — тот же градиент, что и без баннера; картинка мягко проявляется поверх
+                var g0 = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
+                g0.GradientStops.Add(new GradientStop(Color.FromRgb(0x7F, 0xC4, 0xFF), 0));
+                g0.GradientStops.Add(new GradientStop(Color.FromRgb(0x2A, 0x62, 0xF0), 0.5));
+                g0.GradientStops.Add(new GradientStop(Color.FromRgb(0x7A, 0x3C, 0xE8), 1));
+                banner.Background = g0;
+                var pic = new Border { Height = height, CornerRadius = new CornerRadius(27, 27, 0, 0), Opacity = 0, IsHitTestVisible = false };
+                pic.Background = UI.WebBrush(url, 1400, ready: () => Anim.To(pic, UIElement.OpacityProperty, 1, 260));
+                banner.Child = pic;
+            }
             else
             {
                 var g = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
@@ -763,6 +774,9 @@ namespace MizuEngine
 
         // ---------- аккаунты ----------
 
+        FrameworkElement _headerRing;   // аватарка в шапке своего профиля (цель перелёта при смене аккаунта)
+        bool _switching;
+
         Border AccountsCard()
         {
             var rows = new List<UIElement>();
@@ -784,9 +798,19 @@ namespace MizuEngine
                 var id = acc.UserId;
                 rows.Add(UI.IosRow(av, names, mark, current ? (Action)null : async () =>
                 {
-                    Motion.Capture(av, "avatar:" + id);   // аватарка перелетит из списка в шапку профиля
-                    string err = await Supa.SwitchToAsync(id);
-                    if (err != null) { _toast(SocialApi.MapError(err)); await ShowProfile(null); }
+                    if (_switching) return;
+                    _switching = true;
+                    try
+                    {
+                        // Аватарка сразу летит из списка в шапку профиля и ждёт там, старый профиль мягко размывается.
+                        // Когда новый аккаунт загрузится — она плавно превращается в его настоящую аватарку
+                        Motion.FlyAndHold(av, _headerRing != null && _headerRing.IsVisible ? _headerRing : null, "avatar:" + id);
+                        Motion.Leave(_profileHost);
+                        await System.Threading.Tasks.Task.Delay(60);   // дать анимации стартовать до тяжёлой работы
+                        string err = await Supa.SwitchToAsync(id);
+                        if (err != null) { _toast(SocialApi.MapError(err)); await ShowProfile(null); }
+                    }
+                    finally { _switching = false; }
                 }));
             }
             if (Supa.CanAddAccount)
@@ -874,8 +898,7 @@ namespace MizuEngine
                     var dlg = new OpenFileDialog { Filter = "Images|*.png;*.jpg;*.jpeg;*.bmp;*.webp" };
                     if (dlg.ShowDialog() != true) return;
                     image = dlg.FileName;
-                    var img = UI.Web(image, 160);
-                    thumb.Background = img != null ? new ImageBrush(img) { Stretch = Stretch.UniformToFill } : null;
+                    thumb.Background = UI.WebBrush(image, 160);
                     thumb.Visibility = Visibility.Visible;
                     thumb.ToolTip = Path.GetFileName(image);
                     Motion.Pop(thumb, 0.8);
@@ -991,10 +1014,13 @@ namespace MizuEngine
                 t.Margin = new Thickness(0, 10, 0, 0);
                 sp.Children.Add(t);
             }
-            var img = UI.Web(post.ImageUrl, 900);
-            if (img != null)
+            if (!string.IsNullOrEmpty(post.ImageUrl))
             {
-                var pic = new Border { Height = 240, CornerRadius = new CornerRadius(14), Margin = new Thickness(0, 10, 0, 0), Background = new ImageBrush(img) { Stretch = Stretch.UniformToFill } };
+                var pic = new Border { Height = 240, CornerRadius = new CornerRadius(14), Margin = new Thickness(0, 10, 0, 0) };
+                pic.SetResourceReference(Border.BackgroundProperty, "CardBg");
+                var photo = new Border { CornerRadius = new CornerRadius(14), Opacity = 0, IsHitTestVisible = false };
+                photo.Background = UI.WebBrush(post.ImageUrl, 1100, ready: () => Anim.To(photo, UIElement.OpacityProperty, 1, 240));
+                pic.Child = photo;
                 UI.Hand(pic);
                 pic.MouseLeftButtonUp += (s, e) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(post.ImageUrl) { UseShellExecute = true }); } catch { } };
                 sp.Children.Add(pic);
