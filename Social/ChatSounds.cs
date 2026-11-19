@@ -9,15 +9,15 @@ using System.Windows.Media;
 namespace MizuEngine
 {
     /// <summary>
-    /// Звуки сообщений: 10 для входящих, 10 для отправки и свой файл (.wav / .mp3).
-    /// Встроенные звуки не скачиваются, а синтезируются программой (оригинальные звуки iPhone и Telegram
-    /// защищены авторским правом — у нас свои, похожие по характеру). Готовые звуки кэшируются в %AppData%\MizuEngine\sounds.
+    /// Звуки сообщений: 11 для входящих, 10 для отправки и свой файл (.wav / .mp3).
+    /// Часть звуков — готовые файлы rainy (Assets\Sounds, вшиты в exe: tg, ding, tg_out, f2f), остальные синтезируются программой.
+    /// Готовые звуки кэшируются в %AppData%\MizuEngine\sounds\cache.
     /// </summary>
     internal static class ChatSounds
     {
         public static readonly (string Id, string Key)[] Incoming =
         {
-            ("tg", "snd.tg"), ("ding", "snd.ding"), ("chime", "snd.chime"), ("bubble", "snd.bubble"), ("glass", "snd.glass"),
+            ("tg", "snd.tg"), ("ding", "snd.ding"), ("f2f", "snd.f2f"), ("chime", "snd.chime"), ("bubble", "snd.bubble"), ("glass", "snd.glass"),
             ("marimba", "snd.marimba"), ("pluck", "snd.pluck"), ("crystal", "snd.crystal"), ("soft", "snd.soft"), ("retro", "snd.retro")
         };
 
@@ -29,7 +29,7 @@ namespace MizuEngine
 
         public static Settings S;
         static readonly List<MediaPlayer> Playing = new List<MediaPlayer>();   // держим, пока играет (иначе сборщик мусора оборвёт звук)
-        const int Version = 1;   // поменяли синтез — меняем номер, и кэш пересоздаётся
+        const int Version = 1;   // поменяли синтез или файл в Assets\Sounds — меняем номер, и кэш пересоздаётся
 
         static string Folder => Path.Combine(Settings.Folder, "sounds");
 
@@ -84,15 +84,26 @@ namespace MizuEngine
             catch (Exception e) { Settings.Log(e); }
         }
 
-        /// <summary>Готовый .wav встроенного звука (создаётся один раз).</summary>
+        /// <summary>Готовый файл встроенного звука (создаётся один раз): вшитый .mp3 из Assets\Sounds или синтезированный .wav.</summary>
         static string Cached(string id)
         {
             string dir = Path.Combine(Folder, "cache");
-            string path = Path.Combine(dir, $"{id}.v{Version}.wav");
+            byte[] mp3 = Embedded(id);
+            string path = Path.Combine(dir, mp3 != null ? $"{id}.f{Version}.mp3" : $"{id}.v{Version}.wav");
             if (File.Exists(path)) return path;
             Directory.CreateDirectory(dir);
-            File.WriteAllBytes(path, Wav(Synth(id)));
+            File.WriteAllBytes(path, mp3 ?? Wav(Synth(id)));
             return path;
+        }
+
+        /// <summary>Звук-файл, вшитый в exe (MizuEngine.csproj: LogicalName snd.&lt;id&gt;.mp3), или null — тогда синтез.</summary>
+        static byte[] Embedded(string id)
+        {
+            using var st = typeof(ChatSounds).Assembly.GetManifestResourceStream($"snd.{id}.mp3");
+            if (st == null) return null;
+            using var ms = new MemoryStream();
+            st.CopyTo(ms);
+            return ms.ToArray();
         }
 
         // ================== синтез ==================

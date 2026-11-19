@@ -11,6 +11,8 @@
 # один раз и хранится зашифрованным (DPAPI) в %LocalAppData%\MizuEngine-release\github.token — открыть его можно
 # только под твоей учётной записью Windows. «release.bat token» — ввести токен заново.
 # Работает в обычном Windows PowerShell 5.1.
+# «release.bat asset» (или release-asset.bat) — только догрузить share\MizuEngine.exe в уже созданный релиз
+# его версии (версия берётся из самого exe, код и описание не трогаются). Нужно, если загрузка файла оборвалась.
 
 param([string]$Mode = "")
 
@@ -83,8 +85,13 @@ function Status-Of($err) {
 [xml]$proj = Get-Content (Join-Path $Root "MizuEngine.csproj") -Encoding UTF8
 $Version = ($proj.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ }) | Select-Object -First 1
 if (-not $Version) { Fail "Не нашёл <Version> в MizuEngine.csproj." }
-$Tag = "v$Version"
 $Exe = Join-Path $Root "share\$AssetName"
+$AssetOnly = ($Mode -eq "asset")
+if ($AssetOnly -and (Test-Path $Exe)) {
+    $fv = (Get-Item $Exe).VersionInfo.FileVersion
+    if ($fv) { $Version = ($fv.Split('.')[0..2] -join '.') }
+}
+$Tag = "v$Version"
 
 Say "MizuEngine $Tag → github.com/$Repo" "Cyan"
 if (-not (Test-Path $Exe)) { Fail "Нет share\$AssetName. Сначала запусти build-share.bat." }
@@ -121,6 +128,12 @@ catch {
 }
 $Branch = $repoInfo.default_branch
 
+if ($AssetOnly) {
+    Say ""
+    Say "Только файл: догружаю $AssetName в релиз $Tag (код и описание не трогаю)." "Cyan"
+    try { $release = Gh GET "/repos/$Repo/releases/tags/$Tag" }
+    catch { Fail "Релиза $Tag на GitHub нет — запусти обычный release.bat." }
+} else {
 # ---------- 1. код ----------
 Say ""
 Say "1/3  Код → ветка $Branch" "Cyan"
@@ -197,6 +210,7 @@ if ($release) {
     $release = Gh POST "/repos/$Repo/releases" $body
     Say "   Создан." "Green"
 }
+}
 
 # ---------- 3. файл ----------
 Say ""
@@ -208,8 +222,26 @@ foreach ($a in $release.assets) {
     else { Gh DELETE "/repos/$Repo/releases/assets/$($a.id)" | Out-Null; Say "   Старый файл в релизе удалён." }
 }
 if (-not $asset) {
-$upUri = "https://uploads.github.com/repos/$Repo/releases/$($release.id)/assets?name=$AssetName"
-$asset = Invoke-RestMethod -Method POST -Uri $upUri -Headers $script:Headers -InFile $Exe -ContentType "application/octet-stream" -TimeoutSec 3600
+    $upUri = "https://uploads.github.com/repos/$Repo/releases/$($release.id)/assets?name=$AssetName"
+    # Большой файл через VPN иногда обрывается — до 4 попыток; после обрыва GitHub может оставить
+    # недогруженный файл с тем же именем, его удаляем перед новой попыткой.
+    for ($try = 1; $try -le 4 -and -not $asset; $try++) {
+        try {
+            $asset = Invoke-RestMethod -Method POST -Uri $upUri -Headers $script:Headers -InFile $Exe -ContentType "application/octet-stream" -TimeoutSec 3600
+        } catch {
+            Say "   Попытка $try не удалась: $($_.Exception.Message)" "Yellow"
+            Start-Sleep -Seconds (5 * $try)
+            try {
+                $fresh = Gh GET "/repos/$Repo/releases/$($release.id)"
+                foreach ($a in $fresh.assets) {
+                    if ($a.name -ne $AssetName) { continue }
+                    if ($a.state -eq "uploaded" -and $a.size -eq (Get-Item $Exe).Length -and $a.digest -eq "sha256:$ExeSha256") { $asset = $a; Say "   Файл всё-таки дошёл целиком." "Green" }
+                    else { Gh DELETE "/repos/$Repo/releases/assets/$($a.id)" | Out-Null }
+                }
+            } catch { }
+            if (-not $asset -and $try -eq 4) { Fail "Не получилось загрузить $AssetName (4 попытки). Проверь интернет/VPN и запусти release-asset.bat." }
+        }
+    }
 }
 if ($asset.size -ne (Get-Item $Exe).Length) { Fail "GitHub принял файл не целиком ($($asset.size) байт). Запусти release.bat ещё раз." }
 if ($asset.digest -and $asset.digest -ne "sha256:$ExeSha256") { Fail "SHA-256 на GitHub ($($asset.digest)) не совпал. Запусти release.bat ещё раз." }
