@@ -33,6 +33,8 @@ namespace MizuEngine
 
         public static void Play(string pack)
         {
+            // Играем в отдельном потоке звуков (Social/ChatSounds.cs → SoundThread): окно никогда не ждёт звук
+            if (!SoundThread.CheckAccess()) { SoundThread.Run(() => Play(pack)); return; }
             try
             {
                 int vol = Math.Clamp(Volume, 0, 100);

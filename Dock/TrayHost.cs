@@ -132,7 +132,17 @@ namespace MizuEngine
                             int message = Marshal.ReadInt32(cds.lpData, 4);
                             var nid = Marshal.PtrToStructure<NOTIFYICONDATA32>(cds.lpData + 8);
                             bool ok = Handle(message, ref nid);
-                            Forward(m, w, l);   // настоящий трей Windows тоже знает про значок
+                            if (OwnWindow(nid.hWnd))
+                            {
+                                // Значок самого MizuEngine: главное окно ждёт ответа трея. Если Проводник занят,
+                                // окно «зависало» на секунды (особенно при запуске, когда все программы разом
+                                // заново добавляют значки). Отвечаем сразу, а Проводнику пересылаем свою копию.
+                                var copy = new byte[cds.cbData];
+                                Marshal.Copy(cds.lpData, copy, 0, cds.cbData);
+                                ReplyMessage(new IntPtr(ok ? 1 : 0));
+                                ForwardCopy(cds.dwData, copy, w);
+                            }
+                            else Forward(m, w, l);   // настоящий трей Windows тоже знает про значок
                             return new IntPtr(ok ? 1 : 0);
                         }
                         return Forward(m, w, l);   // резерв места (AppBar), положение значка и прочее — отвечает Проводник
@@ -166,12 +176,38 @@ namespace MizuEngine
                 DockNative.SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0, DockNative.SWP_NOMOVE | DockNative.SWP_NOSIZE | DockNative.SWP_NOACTIVATE);
         }
 
+        static bool OwnWindow(uint hwnd)
+        {
+            if (hwnd == 0) return false;
+            DockNative.GetWindowThreadProcessId(new IntPtr(unchecked((int)hwnd)), out uint pid);
+            return pid == (uint)Environment.ProcessId;
+        }
+
+        /// <summary>Переслать Проводнику WM_COPYDATA из своей копии данных (исходный буфер после ответа уже не наш).</summary>
+        static void ForwardCopy(IntPtr dwData, byte[] data, IntPtr w)
+        {
+            IntPtr buf = Marshal.AllocHGlobal(data.Length), cdsPtr = IntPtr.Zero;
+            try
+            {
+                Marshal.Copy(data, 0, buf, data.Length);
+                var cds = new COPYDATASTRUCT { dwData = dwData, cbData = data.Length, lpData = buf };
+                cdsPtr = Marshal.AllocHGlobal(Marshal.SizeOf<COPYDATASTRUCT>());
+                Marshal.StructureToPtr(cds, cdsPtr, false);
+                Forward(DockNative.WM_COPYDATA, w, cdsPtr);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buf);
+                if (cdsPtr != IntPtr.Zero) Marshal.FreeHGlobal(cdsPtr);
+            }
+        }
+
         static IntPtr Forward(uint m, IntPtr w, IntPtr l)
         {
             if (_explorer == IntPtr.Zero || !DockNative.IsWindow(_explorer)) _explorer = DockNative.ExplorerTray();
             if (_explorer == IntPtr.Zero) return IntPtr.Zero;
             if (m == WM_USER + 372) { PostMessage(_explorer, m, w, l); return IntPtr.Zero; }
-            DockNative.SendMessageTimeout(_explorer, m, w, l, DockNative.SMTO_ABORTIFHUNG, 3000, out IntPtr result);
+            DockNative.SendMessageTimeout(_explorer, m, w, l, DockNative.SMTO_ABORTIFHUNG, 1500, out IntPtr result);   // Проводник «думает» — не держим очередь трея дольше 1.5 с
             return result;
         }
 
@@ -348,5 +384,6 @@ namespace MizuEngine
         [DllImport("user32.dll", EntryPoint = "PostMessageW")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] static extern UIntPtr SetTimer(IntPtr h, UIntPtr id, uint ms, IntPtr proc);
         [DllImport("user32.dll")] static extern bool KillTimer(IntPtr h, UIntPtr id);
+        [DllImport("user32.dll")] static extern bool ReplyMessage(IntPtr result);
     }
 }

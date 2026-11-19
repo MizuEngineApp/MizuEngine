@@ -91,10 +91,26 @@ namespace MizuEngine
             catch (Exception e) { Settings.Log(e); }
         }
 
+        /// <summary>
+        /// Спросить у потока дока, но ждать не больше 0.3 с: поток дока может сам ждать другое окно
+        /// (например, снимок сворачиваемого окна) — без ограничения два потока ждали бы друг друга вечно.
+        /// </summary>
+        Rect Ask(Func<Rect> f)
+        {
+            try
+            {
+                var op = _d.BeginInvoke(f, DispatcherPriority.Send);
+                if (op.Wait(TimeSpan.FromMilliseconds(300)) == DispatcherOperationStatus.Completed && op.Result is Rect r) return r;
+                op.Abort();
+            }
+            catch (Exception e) { Settings.Log(e); }
+            return Rect.Empty;
+        }
+
         /// <summary>Запасная цель «джинна»: середина дока монитора окна (если значка этого окна в доке нет).</summary>
         public Rect FallbackIcon(IntPtr hwnd)
         {
-            if (!_d.CheckAccess()) return (Rect)_d.Invoke(new Func<Rect>(() => FallbackIcon(hwnd)));
+            if (!_d.CheckAccess()) return Ask(() => FallbackIcon(hwnd));
             return OwnerOf(hwnd)?.PillOnScreen() ?? Rect.Empty;
         }
 
@@ -200,7 +216,7 @@ namespace MizuEngine
         /// <summary>Значок окна в пикселях экрана (куда сворачивается окно) — в доке его монитора. Empty — значка нет.</summary>
         public Rect IconFor(IntPtr hwnd)
         {
-            if (!_d.CheckAccess()) return (Rect)_d.Invoke(new Func<Rect>(() => IconFor(hwnd)));
+            if (!_d.CheckAccess()) return Ask(() => IconFor(hwnd));
             return OwnerOf(hwnd)?.IconFor(hwnd) ?? Rect.Empty;
         }
 

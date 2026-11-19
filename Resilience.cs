@@ -4,8 +4,10 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace MizuEngine
@@ -22,6 +24,9 @@ namespace MizuEngine
     {
         static string Marker => Path.Combine(Settings.Folder, "clean-exit");
         static string History => Path.Combine(Settings.Folder, "crashes.txt");
+        public static string HangDump => Path.Combine(Settings.Folder, "hang.dmp");
+        static string HangEventName(int pid) => "MizuEngine_HangDump_" + pid;
+        static EventWaitHandle _hangEvent;
 
         /// <summary>Основной процесс: запустить сторожа.</summary>
         public static void Start()
@@ -29,6 +34,9 @@ namespace MizuEngine
             try
             {
                 try { File.Delete(Marker); } catch { }
+                // Снимок прошлого зависания старше 2 дней больше не нужен (он большой — сотни МБ)
+                try { if (File.Exists(HangDump) && DateTime.Now - File.GetLastWriteTime(HangDump) > TimeSpan.FromDays(2)) File.Delete(HangDump); } catch { }
+                _hangEvent = new EventWaitHandle(false, EventResetMode.AutoReset, HangEventName(Environment.ProcessId));
                 Process.Start(new ProcessStartInfo(Environment.ProcessPath, "--watchdog " + Environment.ProcessId)
                 {
                     UseShellExecute = false, CreateNoWindow = true,
@@ -36,6 +44,12 @@ namespace MizuEngine
                 });
             }
             catch (Exception e) { Settings.Log(e); }
+        }
+
+        /// <summary>Основной процесс: окно зависло — просим сторожа снять снимок памяти (по нему видно, где именно застряли).</summary>
+        public static void RequestHangDump()
+        {
+            try { _hangEvent?.Set(); } catch { }
         }
 
         /// <summary>Основной процесс: выходим сами — сторожу не надо ничего делать.</summary>
@@ -58,6 +72,19 @@ namespace MizuEngine
 
             Process p;
             try { p = Process.GetProcessById(pid); } catch { return; }
+            // Основной процесс сообщил о зависании окна — снимаем снимок памяти (один раз за запуск)
+            try
+            {
+                var hang = new EventWaitHandle(false, EventResetMode.AutoReset, HangEventName(pid));
+                bool dumped = false;
+                ThreadPool.RegisterWaitForSingleObject(hang, (st, timedOut) =>
+                {
+                    if (dumped) return;
+                    dumped = true;
+                    WriteDump(p, pid);
+                }, null, -1, true);
+            }
+            catch { }
             try { p.WaitForExit(); } catch { return; }
             int code = 0;
             try { code = p.ExitCode; } catch { }
@@ -98,6 +125,37 @@ namespace MizuEngine
             catch (Exception e) { Settings.Log(e); }
         }
 
+        /// <summary>
+        /// Снимок памяти зависшего MizuEngine в %AppData%\MizuEngine\hang.dmp (старый заменяется).
+        /// По нему analyze-hang.bat показывает, какой код стоял в каждом потоке в момент зависания.
+        /// </summary>
+        static void WriteDump(Process p, int pid)
+        {
+            string tmp = HangDump + ".tmp";
+            try
+            {
+                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+                {
+                    // Полная память + потоки и дескрипторы: этого хватает, чтобы увидеть стеки .NET
+                    const uint type = 0x2 | 0x4 | 0x20 | 0x800 | 0x1000 | 0x20000;
+                    if (!MiniDumpWriteDump(p.Handle, (uint)pid, fs.SafeFileHandle, type, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero))
+                        throw new Exception("MiniDumpWriteDump: ошибка " + Marshal.GetLastWin32Error());
+                }
+                if (File.Exists(HangDump)) File.Delete(HangDump);
+                File.Move(tmp, HangDump);
+                Settings.Log(new Exception($"Снимок зависания сохранён: {HangDump} ({new FileInfo(HangDump).Length / 1048576} МБ)"));
+            }
+            catch (Exception e)
+            {
+                try { File.Delete(tmp); } catch { }
+                Settings.Log(e);
+            }
+        }
+
+        [DllImport("dbghelp.dll", SetLastError = true)]
+        static extern bool MiniDumpWriteDump(IntPtr hProcess, uint processId, Microsoft.Win32.SafeHandles.SafeFileHandle hFile, uint dumpType,
+                                             IntPtr exceptionParam, IntPtr userStreamParam, IntPtr callbackParam);
+
         /// <summary>Не больше 3 автоперезапусков за 5 минут.</summary>
         static bool AllowRestart()
         {
@@ -115,6 +173,64 @@ namespace MizuEngine
             list.Add(now);
             try { File.WriteAllLines(History, list.Select(t => t.Ticks.ToString())); } catch { }
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Следит, чтобы окно MizuEngine не «зависало». Раз в секунду отдельный поток просит главный поток отметиться.
+    /// Не отметился 6 секунд — в error.log пишется «Окно не отвечает…», а сторож снимает снимок памяти (hang.dmp),
+    /// по которому видно точное место зависания. Отвис — запись «Окно снова отвечает (N с)».
+    /// </summary>
+    internal static class HangWatch
+    {
+        static long _beat;
+        static Dispatcher _ui;
+
+        public static void Start(Dispatcher ui)
+        {
+            _ui = ui;
+            _beat = Environment.TickCount64;
+            new Thread(Loop) { IsBackground = true, Name = "MizuEngine hangwatch", Priority = ThreadPriority.BelowNormal }.Start();
+        }
+
+        static void Loop()
+        {
+            bool hung = false, dumped = false;
+            long pending = 0, last = Environment.TickCount64;
+            while (true)
+            {
+                Thread.Sleep(1000);
+                long now = Environment.TickCount64;
+                // Компьютер спал (или весь процесс стоял) — это не зависание окна, начинаем отсчёт заново
+                if (now - last > 3000) Interlocked.Exchange(ref _beat, now);
+                last = now;
+                // Одна просьба за раз: пока главный поток не ответил, новые не копятся в его очереди
+                if (Interlocked.Read(ref pending) == 0)
+                {
+                    Interlocked.Exchange(ref pending, 1);
+                    try
+                    {
+                        _ui.BeginInvoke(DispatcherPriority.Send, new Action(() =>
+                        {
+                            Interlocked.Exchange(ref _beat, Environment.TickCount64);
+                            Interlocked.Exchange(ref pending, 0);
+                        }));
+                    }
+                    catch { return; }   // программа закрывается
+                }
+                long silent = now - Interlocked.Read(ref _beat);
+                if (!hung && silent > 6000)
+                {
+                    hung = true;
+                    Settings.Log(new Exception($"Окно не отвечает уже {silent / 1000} с" + (dumped ? "" : " — сторож снимает снимок для поиска причины (hang.dmp)")));
+                    if (!dumped) { dumped = true; Watchdog.RequestHangDump(); }
+                }
+                else if (hung && silent < 2000)
+                {
+                    hung = false;
+                    Settings.Log(new Exception("Окно снова отвечает"));
+                }
+            }
         }
     }
 

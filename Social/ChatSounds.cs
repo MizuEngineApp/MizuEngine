@@ -3,8 +3,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace MizuEngine
 {
@@ -13,6 +15,48 @@ namespace MizuEngine
     /// Часть звуков — готовые файлы rainy (Assets\Sounds, вшиты в exe: tg, ding, tg_out, f2f), остальные синтезируются программой.
     /// Готовые звуки кэшируются в %AppData%\MizuEngine\sounds\cache.
     /// </summary>
+    /// <summary>
+    /// Отдельный поток для всех звуков (сообщения и нажатия). Раньше звуки играли в потоке окна:
+    /// если служба звука Windows отвечала долго (сменили наушники, Bluetooth, занятое устройство),
+    /// окно ждало её и появлялось «MizuEngine не отвечает». Теперь ждёт только этот поток.
+    /// </summary>
+    internal static class SoundThread
+    {
+        static Dispatcher _d;
+        static readonly object Gate = new object();
+
+        static Dispatcher D
+        {
+            get
+            {
+                if (_d != null) return _d;
+                lock (Gate)
+                {
+                    if (_d != null) return _d;
+                    var ready = new ManualResetEventSlim();
+                    var t = new Thread(() =>
+                    {
+                        _d = Dispatcher.CurrentDispatcher;
+                        _d.UnhandledException += (o, e) => { Settings.Log(e.Exception); e.Handled = true; };
+                        ready.Set();
+                        Dispatcher.Run();
+                    }) { IsBackground = true, Name = "MizuEngine sounds", Priority = ThreadPriority.AboveNormal };
+                    t.SetApartmentState(ApartmentState.STA);
+                    t.Start();
+                    ready.Wait(2000);
+                    return _d;
+                }
+            }
+        }
+
+        public static bool CheckAccess() => _d != null && _d.CheckAccess();
+
+        public static void Run(Action a)
+        {
+            try { D?.BeginInvoke(a); } catch (Exception e) { Settings.Log(e); }
+        }
+    }
+
     internal static class ChatSounds
     {
         public static readonly (string Id, string Key)[] Incoming =
@@ -65,9 +109,8 @@ namespace MizuEngine
 
         static void Play(string id, string custom)
         {
-            var app = Application.Current;
-            if (app == null) return;
-            if (!app.Dispatcher.CheckAccess()) { app.Dispatcher.BeginInvoke(new Action(() => Play(id, custom))); return; }
+            // Звук играет в своём потоке: если Windows «задумается» над аудио, окно MizuEngine не зависнет
+            if (!SoundThread.CheckAccess()) { SoundThread.Run(() => Play(id, custom)); return; }
             try
             {
                 string file = id == "custom" ? custom : Cached(id);

@@ -43,6 +43,8 @@ if errorlevel 1 (
 )
 
 :sign
+rem Obfuscar name map: lets Claude decode hang dumps of the official build. Stays private (obj/ is not uploaded)
+if exist obj\obf\out\Mapping.txt powershell -NoProfile -Command "$v = ([xml](Get-Content MizuEngine.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1; New-Item -ItemType Directory -Force obj\maps | Out-Null; Copy-Item obj\obf\out\Mapping.txt ('obj\maps\Mapping-v' + $v + '.txt') -Force"
 if not exist signing\thumbprint.txt (
   echo.
   echo No certificate yet: run make-cert.bat once, then builds are signed with your name - rainy.
