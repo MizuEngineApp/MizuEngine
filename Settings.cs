@@ -33,7 +33,7 @@ namespace MizuEngine
         public double DockMagnify { get; set; } = 1.6;
         public int DockTransparency { get; set; } = 40;
         public bool DockClock { get; set; } = true;
-        public bool DockBlur { get; set; } = true;
+        public bool DockBlur { get; set; }                   // размытие под доком; у новых пользователей выключено (с 0.10.2)
         public bool DockAutohide { get; set; }
         public bool DockAnimations { get; set; } = true;
         public List<DockPin> DockPins { get; set; }          // закреплённые значки по порядку (null — ещё не переносили с панели задач Windows)

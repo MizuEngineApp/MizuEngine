@@ -12,14 +12,20 @@ using System.Windows.Threading;
 
 namespace MizuEngine
 {
-    /// <summary>Окно под доком, которое размывает всё, что за ним (эффект стекла). Форма окна = форма дока.</summary>
+    /// <summary>
+    /// Стекло под доком: размывает то, что за доком. С 0.10.2 само окно размером ровно с док (чуть меньше),
+    /// а не во всю ширину экрана: даже если Windows рисует размытие на всё окно, оно не вылезает за док
+    /// и не перекрывает приложения.
+    /// </summary>
     internal sealed class DockBlur : Window
     {
         IntPtr _h;
-        Rect _pill;
-        double _radius;
-        Native.RECT _px;          // последняя форма в пикселях — менять её, только если она правда изменилась
+        Native.RECT _px;          // где стоит стекло, пиксели экрана — двигаем окно, только если это правда изменилось
+        int _radiusPx = -1;
         int _tint = 0x40201410;
+
+        const uint SWP_NOZORDER = 0x4;
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out Native.RECT r);
 
         public DockBlur()
         {
@@ -28,12 +34,13 @@ namespace MizuEngine
             ShowInTaskbar = false;
             ShowActivated = false;
             Title = "MizuEngine Dock Blur";
+            Left = -32000; Top = -32000; Width = 1; Height = 1;   // настоящий размер ставит SetPill
 
             SourceInitialized += (s, e) =>
             {
                 _h = new WindowInteropHelper(this).Handle;
                 DockNative.EnableAcrylic(_h, _tint);
-                ApplyRegion(true);
+                Apply();
             };
         }
 
@@ -47,20 +54,42 @@ namespace MizuEngine
             if (_h != IntPtr.Zero) DockNative.EnableAcrylic(_h, _tint);
         }
 
-        public void SetPill(Rect pill, double radius)
+        /// <summary>Ставит стекло ровно под «пилюлю» дока. pill — в координатах окна дока (DIP).</summary>
+        public void SetPill(IntPtr dock, Visual dockVisual, Rect pill, double radius)
         {
-            _pill = pill;
-            _radius = radius;
-            ApplyRegion(false);
+            if (_h == IntPtr.Zero || dock == IntPtr.Zero) return;
+            var target = default(Native.RECT);
+            int rad = 0;
+            if (!pill.IsEmpty && pill.Width > 4 && pill.Height > 4 && GetWindowRect(dock, out var w))
+            {
+                var dpi = VisualTreeHelper.GetDpi(dockVisual);
+                double r = radius * dpi.DpiScaleX;
+                // Отступ 0.3·радиуса: прямоугольник стекла целиком помещается внутри скруглённого дока,
+                // даже если Windows не обрежет углы регионом
+                int inset = Math.Max(2, (int)Math.Ceiling(r * 0.3));
+                target.Left = w.Left + (int)Math.Round(pill.Left * dpi.DpiScaleX) + inset;
+                target.Top = w.Top + (int)Math.Round(pill.Top * dpi.DpiScaleY) + inset;
+                target.Right = w.Left + (int)Math.Round(pill.Right * dpi.DpiScaleX) - inset;
+                target.Bottom = w.Top + (int)Math.Round(pill.Bottom * dpi.DpiScaleY) - inset;
+                rad = (int)Math.Round(Math.Max(0, r - inset) * 2);
+            }
+            if (target.Left == _px.Left && target.Top == _px.Top && target.Right == _px.Right && target.Bottom == _px.Bottom && rad == _radiusPx) return;
+            _px = target;
+            _radiusPx = rad;
+            Apply();
         }
 
-        void ApplyRegion(bool force)
+        void Apply()
         {
             if (_h == IntPtr.Zero) return;
-            var px = DockWindow.ToPixels(this, _pill);
-            if (!force && px.Left == _px.Left && px.Top == _px.Top && px.Right == _px.Right && px.Bottom == _px.Bottom) return;
-            _px = px;
-            DockNative.SetWindowRgn(_h, DockWindow.RoundRegion(this, _pill, _radius), true);
+            int w = _px.Right - _px.Left, h = _px.Bottom - _px.Top;
+            if (w <= 0 || h <= 0)
+            {
+                DockNative.SetWindowRgn(_h, DockNative.CreateRectRgn(0, 0, 0, 0), true);   // дока не видно — стекла тоже
+                return;
+            }
+            DockNative.SetWindowPos(_h, IntPtr.Zero, _px.Left, _px.Top, w, h, SWP_NOZORDER | DockNative.SWP_NOACTIVATE);
+            DockNative.SetWindowRgn(_h, DockNative.CreateRoundRectRgn(0, 0, w + 1, h + 1, _radiusPx, _radiusPx), true);
         }
     }
 
@@ -212,8 +241,7 @@ namespace MizuEngine
         {
             double w = SystemParameters.PrimaryScreenWidth, h = SystemParameters.PrimaryScreenHeight;
             double winH = _s.DockSize * _s.DockMagnify + 2 * DockView.Pad + DockView.BottomMargin + DockView.LabelSpace + DockView.BounceSpace;
-            Left = 0; Top = h - winH; Width = w; Height = winH;
-            _blur.Left = 0; _blur.Top = h - winH; _blur.Width = w; _blur.Height = winH;
+            Left = 0; Top = h - winH; Width = w; Height = winH;   // стекло под доком ставится по форме дока (UpdateShape)
         }
 
         /// <summary>Подгоняет область кликов дока и стекло под текущую форму дока (только если форма правда изменилась).</summary>
@@ -241,7 +269,7 @@ namespace MizuEngine
                     DockNative.SetWindowRgn(_hwnd, rgn, false);   // окно и так перерисуется в этом кадре
                 }
             }
-            if (_s.DockBlur) _blur.SetPill(_view.Pill, _view.PillRadius);
+            if (_s.DockBlur) _blur.SetPill(_hwnd, this, _view.Pill, _view.PillRadius);
         }
 
         Native.RECT _rgnBand, _rgnLabel;

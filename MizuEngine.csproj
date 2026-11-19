@@ -16,7 +16,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Иконка exe: её берут Проводник, док, Alt+Tab и заголовки окон -->
     <ApplicationIcon>Assets\MizuEngine.ico</ApplicationIcon>
-    <Version>0.10.1</Version>
+    <Version>0.10.2</Version>
     <!-- Меньше памяти: без фонового сборщика мусора и с режимом экономии памяти -->
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <ServerGarbageCollection>false</ServerGarbageCollection>
