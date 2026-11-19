@@ -103,9 +103,9 @@ if ($sig.SignerCertificate -eq $null -or $sig.Status -eq "NotSigned" -or $sig.St
 }
 if ($sig.SignerCertificate.Subject -notmatch "CN=rainy") { Fail "Файл подписан не rainy: $($sig.SignerCertificate.Subject)" }
 $Thumb = $sig.SignerCertificate.Thumbprint
-$Sha   = (Get-FileHash $Exe -Algorithm SHA256).Hash.ToLower()
+$ExeSha256 = (Get-FileHash $Exe -Algorithm SHA256).Hash.ToLower()   # не $Sha: PowerShell не различает регистр, $sha ниже — это git-блобы
 $SizeMb = [math]::Round((Get-Item $Exe).Length / 1MB, 1)
-Say "Файл: $SizeMb МБ, подпись rainy ($Thumb), SHA-256 $Sha"
+Say "Файл: $SizeMb МБ, подпись rainy ($Thumb), SHA-256 $ExeSha256"
 
 $NotesFile = Join-Path $Root "release-notes\$Tag.md"
 if (-not (Test-Path $NotesFile)) { Fail "Нет описания release-notes\$Tag.md. Попроси Claude написать его." }
@@ -179,7 +179,7 @@ $footer = @"
 
 ---
 
-**$AssetName** · $SizeMb MB · SHA-256: ``$Sha``
+**$AssetName** · $SizeMb MB · SHA-256: ``$ExeSha256``
 
 Подписан сертификатом **rainy** (``CN=rainy, O=MizuEngine``), отпечаток ``$Thumb``.
 Signed by **rainy**. Как проверить, что файл настоящий / How to verify: [README](https://github.com/$Repo#-это-не-вирус-как-проверить).
@@ -201,13 +201,18 @@ if ($release) {
 # ---------- 3. файл ----------
 Say ""
 Say "3/3  Загружаю $AssetName ($SizeMb МБ) — может занять несколько минут…" "Cyan"
+$asset = $null
 foreach ($a in $release.assets) {
-    if ($a.name -eq $AssetName) { Gh DELETE "/repos/$Repo/releases/assets/$($a.id)" | Out-Null; Say "   Старый файл в релизе удалён." }
+    if ($a.name -ne $AssetName) { continue }
+    if ($a.size -eq (Get-Item $Exe).Length -and $a.digest -eq "sha256:$ExeSha256") { $asset = $a; Say "   Этот же файл уже в релизе — загружать заново не нужно." "Green" }
+    else { Gh DELETE "/repos/$Repo/releases/assets/$($a.id)" | Out-Null; Say "   Старый файл в релизе удалён." }
 }
+if (-not $asset) {
 $upUri = "https://uploads.github.com/repos/$Repo/releases/$($release.id)/assets?name=$AssetName"
 $asset = Invoke-RestMethod -Method POST -Uri $upUri -Headers $script:Headers -InFile $Exe -ContentType "application/octet-stream" -TimeoutSec 3600
+}
 if ($asset.size -ne (Get-Item $Exe).Length) { Fail "GitHub принял файл не целиком ($($asset.size) байт). Запусти release.bat ещё раз." }
-if ($asset.digest -and $asset.digest -ne "sha256:$Sha") { Fail "SHA-256 на GitHub ($($asset.digest)) не совпал. Запусти release.bat ещё раз." }
+if ($asset.digest -and $asset.digest -ne "sha256:$ExeSha256") { Fail "SHA-256 на GitHub ($($asset.digest)) не совпал. Запусти release.bat ещё раз." }
 
 # ---------- проверка: так же, как спрашивает приложение ----------
 Start-Sleep -Seconds 2
