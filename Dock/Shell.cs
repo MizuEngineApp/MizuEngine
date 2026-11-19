@@ -15,7 +15,8 @@ namespace MizuEngine
     {
         public static Dispatcher D { get; private set; }
         public static Settings S { get; private set; }
-        public static DockWindow Dock { get; private set; }
+        /// <summary>Все доки (на главном мониторе и, если включено, на остальных).</summary>
+        public static DockSet Dock { get; private set; }
         public static WindowAnimator Anim { get; private set; }
         public static IslandWindow Island { get; private set; }
 
@@ -38,7 +39,7 @@ namespace MizuEngine
                 {
                     Anim = new WindowAnimator();
                     Anim.Show();   // показано всегда, но с пустой формой: не видно и не мешает кликам (без мигания при каждом запуске)
-                    Dock = new DockWindow(s);
+                    Dock = new DockSet(s);
                     Island = new IslandWindow(s);
                     // Окно втянулось в Dynamic Island — его значок ждёт в капсуле; развернули — убираем
                     Anim.Finished += (hwnd, minimized, up) =>
@@ -110,11 +111,12 @@ namespace MizuEngine
 
         /// <summary>
         /// Куда летит окно: музыка, таймеры и сам MizuEngine — вверх, в Dynamic Island (если так настроено),
-        /// остальное — в свой значок дока. Empty — анимировать некуда.
+        /// остальное — в свой значок дока. Dynamic Island есть только на главном мониторе, поэтому окна
+        /// с других мониторов всегда уходят вниз, в док своего монитора. Empty — анимировать некуда.
         /// </summary>
         public static (Rect rect, bool up) FlyTarget(IntPtr hwnd, Rect dockIcon)
         {
-            if (Island != null && Island.FliesUp && Island.IsIslandApp(hwnd))
+            if (Island != null && Island.FliesUp && Island.IsIslandApp(hwnd) && Monitors.OnPrimary(hwnd))
             {
                 var r = Island.ScreenRect();
                 if (!r.IsEmpty) return (r, true);

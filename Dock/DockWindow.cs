@@ -42,6 +42,8 @@ namespace MizuEngine
                 DockNative.EnableAcrylic(_h, _tint);
                 Apply();
             };
+            // Стекло переехало на монитор с другим масштабом — Windows сам меняет размер окна, ставим его обратно ровно под док
+            DpiChanged += (s, e) => Dispatcher.BeginInvoke(new Action(Apply));
         }
 
         public IntPtr Handle => _h;
@@ -97,11 +99,13 @@ namespace MizuEngine
     /// Док вместо панели задач: «Пуск», закреплённые и открытые приложения, трей, сеть/звук и часы.
     /// Работает как панель задач Windows: порядок значков не прыгает, точка под открытыми приложениями,
     /// меню по правой кнопке, значки можно перетаскивать. А выглядит и анимируется как док macOS.
+    /// Один такой док — на одном мониторе (Mon); все доки вместе — DockSet.
     /// Живёт в своём потоке (Shell): эффекты рабочего стола и главное окно его не тормозят.
     /// </summary>
     internal sealed class DockWindow : Window
     {
         readonly Settings _s;
+        readonly DockSet _owner;
         readonly DockView _view = new DockView();
         readonly DockBlur _blur = new DockBlur();
         readonly DispatcherTimer _timer, _soon;
@@ -121,9 +125,14 @@ namespace MizuEngine
 
         static bool Win11 => Environment.OSVersion.Version.Build >= 22000;
 
-        public DockWindow(Settings settings)
+        /// <summary>Монитор этого дока (null — мониторы не нашлись, док по размеру главного экрана).</summary>
+        public MonitorInfo Mon { get; private set; }
+        public bool IsPrimary => Mon == null || Mon.Primary;
+
+        public DockWindow(Settings settings, DockSet owner)
         {
             _s = settings;
+            _owner = owner;
             Glass.Setup(this, clickThrough: false);
             Topmost = true;
             ShowInTaskbar = false;
@@ -150,9 +159,37 @@ namespace MizuEngine
             _soon = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(60) };
             _soon.Tick += (o, e) => { _soon.Stop(); Refresh(); };
             // Язык меняют в главном окне (другой поток) — обновляемся в своём
-            Loc.Changed += () => Dispatcher.BeginInvoke(new Action(() => { if (_enabled) Refresh(); }));
-            TrayHost.Changed += () => Dispatcher.BeginInvoke(new Action(UpdateTrayCount));
+            _onLoc = () => Dispatcher.BeginInvoke(new Action(() => { if (_enabled) Refresh(); }));
+            _onTray = () => Dispatcher.BeginInvoke(new Action(UpdateTrayCount));
+            Loc.Changed += _onLoc;
+            TrayHost.Changed += _onTray;
+            // Док переехал на монитор с другим масштабом — Windows меняет размер окна сам; ставим ровно по низу монитора
+            DpiChanged += (o, e) => Dispatcher.BeginInvoke(new Action(() => { if (_enabled) { Place(); UpdateShape(); if (_appbar) SetAppBarPos(); } }));
         }
+
+        readonly Action _onLoc, _onTray;
+
+        /// <summary>Монитор поменялся (разрешение, масштаб, положение) — переставляем док.</summary>
+        public void SetMonitor(MonitorInfo m)
+        {
+            bool moved = Mon == null || m == null || !Same(Mon.Bounds, m.Bounds) || Mon.Dpi != m.Dpi;
+            Mon = m;
+            if (_enabled && moved) { Place(); if (_appbar) SetAppBarPos(); }
+        }
+
+        /// <summary>Монитор отключили или док на нём выключили — окно больше не нужно.</summary>
+        public void CloseAll()
+        {
+            Loc.Changed -= _onLoc;
+            TrayHost.Changed -= _onTray;
+            _timer.Stop();
+            _soon.Stop();
+            try { _trayPopup?.Close(); } catch { }
+            try { _blur.Close(); } catch { }
+            try { Close(); } catch { }
+        }
+
+        public void RefreshNow() { if (_enabled) Refresh(); }
 
         // ================== включение / выключение (можно звать из любого потока) ==================
 
@@ -163,15 +200,11 @@ namespace MizuEngine
             _enabled = on;
             if (on)
             {
-                if (_s.DockPins == null)
-                {
-                    _s.DockPins = DockApps.ImportWindowsPins();   // первый запуск: берём закреплённое на панели задач Windows
-                    _s.Save();
-                }
                 _view.Items.Clear();
+                new WindowInteropHelper(this).EnsureHandle();   // окно ставим в пикселях своего монитора ещё до показа
                 Place();
                 Show();
-                Taskbar.Hide(_s);
+                Place();
                 if (_hwnd != IntPtr.Zero && !_shellHook) _shellHook = DockNative.RegisterShellHookWindow(_hwnd);
                 ApplySettings();   // стекло, место внизу экрана и значки
                 _timer.Start();
@@ -182,24 +215,11 @@ namespace MizuEngine
                 _soon.Stop();
                 _trayPopup?.Dismiss();
                 if (_shellHook) { DockNative.DeregisterShellHookWindow(_hwnd); _shellHook = false; }
-                TrayHost.Stop();
                 UnregisterAppBar();
-                Taskbar.Restore(_s);
                 _blur.Hide();
                 Hide();
             }
-            Shell.SyncAnimations();
-        }
-
-        /// <summary>Вызывается при выходе из программы: возвращает панель задач, но не меняет сохранённую настройку дока.</summary>
-        public void Shutdown()
-        {
-            if (!Dispatcher.CheckAccess())
-            {
-                try { Dispatcher.Invoke(new Action(Shutdown), TimeSpan.FromSeconds(2)); } catch { }
-                return;
-            }
-            if (_enabled) SetEnabled(false);
+            // Панель задач Windows, трей и анимации — общие для всех доков, ими управляет DockSet
         }
 
         public bool Enabled => _enabled;
@@ -221,7 +241,6 @@ namespace MizuEngine
             _view.Autohide = _s.DockAutohide;
             _view.SetTransparency(_s.DockTransparency);
             _blur.SetTransparency(_s.DockTransparency);
-            Shell.SyncAnimations();
             if (!_enabled) return;
 
             Place();
@@ -232,17 +251,27 @@ namespace MizuEngine
             else if (!_appbar) RegisterAppBar();
             else SetAppBarPos();
 
-            // Трей внутри дока: работает, пока включены док и системные значки
-            if (_s.DockClock && _s.DockTray) TrayHost.Start(); else { TrayHost.Stop(); _trayPopup?.Dismiss(); }
+            // Трей внутри дока (общий для всех доков) включает DockSet; здесь только прячем панельку значков
+            if (!(_s.DockClock && _s.DockTray)) _trayPopup?.Dismiss();
             Refresh();
         }
 
+        /// <summary>Окно дока — полоса по низу своего монитора (в пикселях: у мониторов может быть разный масштаб).</summary>
         void Place()
         {
-            double w = SystemParameters.PrimaryScreenWidth, h = SystemParameters.PrimaryScreenHeight;
             double winH = _s.DockSize * _s.DockMagnify + 2 * DockView.Pad + DockView.BottomMargin + DockView.LabelSpace + DockView.BounceSpace;
-            Left = 0; Top = h - winH; Width = w; Height = winH;   // стекло под доком ставится по форме дока (UpdateShape)
+            if (Mon == null || _hwnd == IntPtr.Zero)
+            {
+                double w = SystemParameters.PrimaryScreenWidth, h = SystemParameters.PrimaryScreenHeight;
+                Left = 0; Top = h - winH; Width = w; Height = winH;   // стекло под доком ставится по форме дока (UpdateShape)
+                return;
+            }
+            var b = Mon.Bounds;
+            int hpx = (int)Math.Ceiling(winH * Mon.Scale);
+            DockNative.SetWindowPos(_hwnd, IntPtr.Zero, b.Left, b.Bottom - hpx, b.Width, hpx, SWP_NOZORDER | DockNative.SWP_NOACTIVATE);
         }
+
+        const uint SWP_NOZORDER = 0x4;
 
         /// <summary>Подгоняет область кликов дока и стекло под текущую форму дока (только если форма правда изменилась).</summary>
         void UpdateShape()
@@ -306,19 +335,24 @@ namespace MizuEngine
         {
             if (!_enabled) return;
 
-            // В полноэкранных играх и видео док прячется
-            bool fs = _fullscreen.ForegroundIsFullscreen(_hwnd, Native.GetSystemMetrics(0), Native.GetSystemMetrics(1));
+            // В полноэкранных играх и видео док прячется (только тот, на чьём мониторе игра)
+            bool fs = Mon != null
+                ? _fullscreen.ForegroundCovers(_hwnd, Mon.Bounds)
+                : _fullscreen.ForegroundIsFullscreen(_hwnd, Native.GetSystemMetrics(0), Native.GetSystemMetrics(1));
             if (fs != _fsHidden)
             {
                 _fsHidden = fs;
                 if (fs) { Hide(); _blur.Hide(); _trayPopup?.Dismiss(); }
                 else { if (_s.DockBlur) _blur.Show(); Show(); }
             }
-            Taskbar.EnsureHidden();
+            if (IsPrimary) Taskbar.EnsureHidden();   // панели задач Windows прячет один док, а не каждый
             if (_s.DockBlur && _blur.Handle != IntPtr.Zero && _hwnd != IntPtr.Zero)   // стекло всегда прямо под доком
                 DockNative.SetWindowPos(_blur.Handle, _hwnd, 0, 0, 0, 0, DockNative.SWP_NOMOVE | DockNative.SWP_NOSIZE | DockNative.SWP_NOACTIVATE);
 
             var wins = DockApps.EnumRunning();
+            // Окна этого монитора (и мониторов без своего дока — для главного дока)
+            var here = new HashSet<IntPtr>();
+            foreach (var w in wins) if (_owner == null || _owner.OwnerOf(w.Hwnd) == this) here.Add(w.Hwnd);
             foreach (var w in wins) if (!_seen.ContainsKey(w.Hwnd)) _seen[w.Hwnd] = ++_seenCounter;
             if (_seen.Count > wins.Count + 64)
             {
@@ -336,13 +370,17 @@ namespace MizuEngine
                 string key = KeyOf(string.IsNullOrEmpty(pin.Target) ? pin.Path : pin.Target);
                 if (!keys.Add(key)) continue;
                 var item = new DockItem { Kind = DockKind.App, Key = key, Name = pin.Name, Launch = pin.Path, IconPath = pin.Path, Pinned = true, Pin = pin };
+                List<IntPtr> away = null;
                 foreach (var w in wins)
                     if (!claimed.Contains(w.Hwnd) && DockApps.Matches(pin, w))
                     {
                         claimed.Add(w.Hwnd);
-                        item.Windows.Add(w.Hwnd);
+                        if (here.Contains(w.Hwnd)) item.Windows.Add(w.Hwnd);
+                        else (away ??= new List<IntPtr>()).Add(w.Hwnd);   // окно открыто на другом мониторе
                         item.Sample ??= w;
                     }
+                // Закреплённое приложение открыто только на другом мониторе: точки здесь нет, но клик переключает на его окно, а не запускает второе
+                if (item.Windows.Count == 0 && away != null) { item.Windows.AddRange(away); item.Away = true; }
                 specs.Add(item);
             }
 
@@ -350,7 +388,7 @@ namespace MizuEngine
             var groups = new Dictionary<string, DockItem>();
             foreach (var w in wins)
             {
-                if (claimed.Contains(w.Hwnd)) continue;
+                if (claimed.Contains(w.Hwnd) || !here.Contains(w.Hwnd)) continue;   // открытые — только в доке своего монитора
                 string key = KeyOf(w.Key);
                 if (!groups.TryGetValue(key, out var item))
                 {
@@ -410,8 +448,9 @@ namespace MizuEngine
                 var ex = old.Find(o => o.Key == sp.Key && !result.Contains(o));
                 if (ex != null)
                 {
-                    bool wasRunning = ex.Windows.Count > 0;
+                    bool wasRunning = ex.Windows.Count > 0 && !ex.Away;
                     ex.Windows = sp.Windows;
+                    ex.Away = sp.Away;
                     ex.Name = sp.Name;
                     ex.Launch = sp.Launch;
                     ex.Pinned = sp.Pinned;
@@ -421,7 +460,7 @@ namespace MizuEngine
                     ex.Attention = sp.Attention;
                     ex.PresenceTarget = 1;
                     if (ex.IconPath != sp.IconPath && sp.IconPath != null && ex.Icon == null) LoadIcon(ex, sp.IconPath);
-                    if (!wasRunning && ex.Windows.Count > 0 && ex.Bounce >= 0) _view.Wake();
+                    if (!wasRunning && ex.Windows.Count > 0 && !ex.Away && ex.Bounce >= 0) _view.Wake();
                     result.Add(ex);
                 }
                 else
@@ -462,10 +501,10 @@ namespace MizuEngine
         public Rect IconFor(IntPtr hwnd)
         {
             if (!_enabled || _fsHidden) return Rect.Empty;
-            var it = _view.Items.Find(x => x.Kind == DockKind.App && x.PresenceTarget > 0 && x.Windows.Contains(hwnd));
+            var it = _view.Items.Find(x => x.Kind == DockKind.App && x.PresenceTarget > 0 && !x.Away && x.Windows.Contains(hwnd));
             if (it == null)
             {
-                // Окно только что появилось и ещё не в доке — ищем значок его приложения
+                // Окно только что появилось (или переехало с другого монитора) и ещё не в доке — ищем значок его приложения
                 DockNative.GetWindowThreadProcessId(hwnd, out uint pid);
                 string exe = DockNative.ExePath(pid);
                 it = _view.Items.Find(x => x.Kind == DockKind.App && x.Sample != null && string.Equals(x.Sample.Exe, exe, StringComparison.OrdinalIgnoreCase));
@@ -518,9 +557,12 @@ namespace MizuEngine
             _soon.Start();
         }
 
+        /// <summary>Куда сворачивается окно: в этот значок, а если окно на другом мониторе — в значок дока того монитора.</summary>
+        Rect IconForWindow(IntPtr h, DockItem it) => it.Away && _owner != null ? _owner.IconFor(h) : IconOnScreen(it);
+
         void MinimizeWindow(IntPtr h, DockItem it)
         {
-            var target = Shell.FlyTarget(h, IconOnScreen(it));
+            var target = Shell.FlyTarget(h, IconForWindow(h, it));
             if (_s.DockAnimations && !target.rect.IsEmpty) Shell.Anim.Minimize(h, target.rect, target.up);
             else WindowAnimator.SetMinimized(h, true);
         }
@@ -529,7 +571,7 @@ namespace MizuEngine
         {
             if (Native.IsIconic(h))
             {
-                var target = Shell.FlyTarget(h, IconOnScreen(it));
+                var target = Shell.FlyTarget(h, IconForWindow(h, it));
                 if (_s.DockAnimations && !target.rect.IsEmpty) { Shell.Anim.Restore(h, target.rect, target.up); return; }
                 WindowAnimator.SetMinimized(h, false);
             }
@@ -571,9 +613,16 @@ namespace MizuEngine
             _trayPopup ??= new TrayPopup();
             if (_trayPopup.IsOpen) { _trayPopup.Dismiss(); return; }
             Rect box = _view.ItemBox(it);
-            var anchor = new Point(Left + box.X + box.Width / 2, Top + _view.Pill.Top);
-            var keep = new Rect(Left + box.X, Top + box.Y, box.Width, box.Height);
-            _trayPopup.Open(anchor, keep);
+            Point anchor, k1, k2;
+            try
+            {
+                // В пикселях экрана: доки бывают на мониторах с разным масштабом
+                anchor = _view.PointToScreen(new Point(box.X + box.Width / 2, _view.Pill.Top));
+                k1 = _view.PointToScreen(box.TopLeft);
+                k2 = _view.PointToScreen(box.BottomRight);
+            }
+            catch (InvalidOperationException) { return; }
+            _trayPopup.Open(anchor, new Rect(k1, k2));
         }
 
         // ================== меню по правой кнопке ==================
@@ -642,7 +691,7 @@ namespace MizuEngine
             if (pins.Exists(p => string.Equals(p.Target, pin.Target, StringComparison.OrdinalIgnoreCase))) return;
             if (at < 0 || at > pins.Count) pins.Add(pin); else pins.Insert(at, pin);
             _s.Save();
-            Refresh();
+            RefreshAllDocks();
         }
 
         void Unpin(DockItem it)
@@ -650,7 +699,7 @@ namespace MizuEngine
             if (it.Pin == null || _s.DockPins == null) return;
             _s.DockPins.Remove(it.Pin);
             _s.Save();
-            Refresh();
+            RefreshAllDocks();
         }
 
         /// <summary>
@@ -674,7 +723,13 @@ namespace MizuEngine
             }
             _s.DockPins = pins;
             _s.Save();
-            Refresh();
+            RefreshAllDocks();
+        }
+
+        /// <summary>Закреплённые значки есть в каждом доке — после изменения обновляем все.</summary>
+        void RefreshAllDocks()
+        {
+            if (_owner != null) _owner.RefreshAll(); else Refresh();
         }
 
         // ================== резерв места внизу экрана ==================
@@ -693,12 +748,13 @@ namespace MizuEngine
         void SetAppBarPos()
         {
             if (!_appbar) return;
-            var dpi = VisualTreeHelper.GetDpi(this);
-            int sw = Native.GetSystemMetrics(0), sh = Native.GetSystemMetrics(1);
-            int reserve = (int)Math.Ceiling((_s.DockSize + 2 * DockView.Pad + DockView.BottomMargin + 4) * dpi.DpiScaleY);
+            // Место резервируется внизу своего монитора — окна на нём разворачиваются до дока, а не под него
+            double scale = Mon?.Scale ?? VisualTreeHelper.GetDpi(this).DpiScaleY;
+            var b = Mon?.Bounds ?? new Native.RECT { Left = 0, Top = 0, Right = Native.GetSystemMetrics(0), Bottom = Native.GetSystemMetrics(1) };
+            int reserve = (int)Math.Ceiling((_s.DockSize + 2 * DockView.Pad + DockView.BottomMargin + 4) * scale);
             var abd = DockNative.NewAppBar(_hwnd);
             abd.uEdge = DockNative.ABE_BOTTOM;
-            abd.rc = new Native.RECT { Left = 0, Top = sh - reserve, Right = sw, Bottom = sh };
+            abd.rc = new Native.RECT { Left = b.Left, Top = b.Bottom - reserve, Right = b.Right, Bottom = b.Bottom };
             DockNative.SHAppBarMessage(DockNative.ABM_QUERYPOS, ref abd);
             abd.rc.Top = abd.rc.Bottom - reserve;
             DockNative.SHAppBarMessage(DockNative.ABM_SETPOS, ref abd);

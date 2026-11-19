@@ -185,8 +185,11 @@ namespace MizuEngine
             if (_h == IntPtr.Zero) return false;
             if (!IsVisible) Show();
             UpdateScreen();
-            // Анимация живёт на главном мониторе (там док и Island); окно на другом мониторе сворачивается обычно
-            if (frame.Width < 60 || frame.Height < 40 || frame.Right <= 0 || frame.Left >= _sw || frame.Bottom <= 0 || frame.Top >= _sh) return false;
+            // Анимация идёт в пределах монитора окна: на нём же должен быть и значок (свой док монитора или Island на главном)
+            if (frame.Width < 60 || frame.Height < 40) return false;
+            var mon = Monitors.BoundsOf(frame);
+            double icx = (icon.Left + icon.Right) / 2, icy = (icon.Top + icon.Bottom) / 2;
+            if (icx < mon.Left || icx > mon.Right || icy < mon.Top || icy > mon.Bottom) return false;
 
             _target = hwnd;
             _up = up;
@@ -197,7 +200,7 @@ namespace MizuEngine
             // Окно анимации — только на площади «окно + значок», а не на весь экран: видеокарте меньше работы
             int l = (int)Math.Floor(Math.Min(full.Left, icon.Left)) - 2, t = (int)Math.Floor(Math.Min(full.Top, icon.Top)) - 2;
             int r = (int)Math.Ceiling(Math.Max(full.Right, icon.Right)) + 2, b = (int)Math.Ceiling(Math.Max(full.Bottom, icon.Bottom)) + 2;
-            l = Math.Max(0, l); t = Math.Max(0, t); r = Math.Min(_sw, r); b = Math.Min(_sh - 1, b);   // на 1 px ниже экрана — чтобы Wallpaper Engine не принял за игру
+            l = Math.Max(mon.Left, l); t = Math.Max(mon.Top, t); r = Math.Min(mon.Right, r); b = Math.Min(mon.Bottom - 1, b);   // на 1 px ниже экрана — чтобы Wallpaper Engine не принял за игру
             if (r - l < 10 || b - t < 10) { _target = IntPtr.Zero; return false; }
             _bx = l; _by = t; _bw = r - l; _bh = b - t;
             DockNative.SetWindowPos(_h, TopMost, _bx, _by, _bw, _bh, DockNative.SWP_NOACTIVATE);

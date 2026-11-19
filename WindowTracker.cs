@@ -68,6 +68,16 @@ namespace MizuEngine
             return r.Left <= 0 && r.Top <= 0 && r.Right >= screenW && r.Bottom >= screenH;
         }
 
+        /// <summary>Игра или видео во весь монитор b (пиксели экрана) — тогда док этого монитора прячем.</summary>
+        public bool ForegroundCovers(IntPtr own, Native.RECT b)
+        {
+            IntPtr h = Native.GetForegroundWindow();
+            if (h == IntPtr.Zero || h == own) return false;
+            if (IsShellClass(ClassOf(h))) return false;
+            if (!Native.GetWindowRect(h, out var r)) return false;
+            return r.Left <= b.Left && r.Top <= b.Top && r.Right >= b.Right && r.Bottom >= b.Bottom;
+        }
+
         static bool IsShellClass(string cls) =>
             cls == "Progman" || cls == "WorkerW" || cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd";
 

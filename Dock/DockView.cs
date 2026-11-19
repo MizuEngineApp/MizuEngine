@@ -21,6 +21,7 @@ namespace MizuEngine
         public DockPin Pin;                 // закреплённый значок (null — просто открытое приложение)
         public DockApps.Win Sample;         // одно из окон приложения — из него берём путь и AUMID для закрепления
         public bool Attention;              // приложение просит внимания (мигает на панели задач) — значок прыгает, точка оранжевая
+        public bool Away;                   // закреплённое приложение открыто только на другом мониторе: точки нет, клик переключает на окно
 
         // Анимация: Presence — насколько элемент «появился» (0..1), Size — текущий размер иконки
         public double Presence, PresenceTarget = 1, Size, X, W;
@@ -551,7 +552,7 @@ namespace MizuEngine
                     else DrawGeneric(dc, rect, it.Name, dpi);
                     if (it == _pressed) dc.Pop();
                     // Точка под открытым приложением (оранжевая — приложение просит внимания)
-                    if (it.Windows.Count > 0)
+                    if (it.Windows.Count > 0 && !it.Away)
                         dc.DrawEllipse(it.Attention ? AttentionDot : DotFill, DotRim, new Point(cx, Pill.Bottom - 4.2), 2.4, 2.4);
                     break;
                 }

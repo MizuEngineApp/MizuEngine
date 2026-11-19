@@ -10,8 +10,41 @@ namespace MizuEngine
     /// </summary>
     internal static class Taskbar
     {
+        /// <summary>Есть ли на мониторе наш док — тогда панель задач Windows второго монитора на нём прячем (ставит DockSet).</summary>
+        public static Func<IntPtr, bool> DockOn;
+        static readonly HashSet<IntPtr> _hiddenSecondary = new HashSet<IntPtr>();
+
+        /// <summary>
+        /// Панели задач на других мониторах (Shell_SecondaryTrayWnd): где стоит наш док — прячем,
+        /// где дока нет — возвращаем (они остаются с автоскрытием, как и раньше).
+        /// </summary>
+        static void SyncSecondary()
+        {
+            IntPtr h = IntPtr.Zero;
+            var alive = new HashSet<IntPtr>();
+            while ((h = DockNative.FindWindowEx(IntPtr.Zero, h, "Shell_SecondaryTrayWnd", null)) != IntPtr.Zero)
+            {
+                alive.Add(h);
+                bool hide = DockOn?.Invoke(DockNative.MonitorFromWindow(h, 2)) == true;
+                if (hide)
+                {
+                    if (Native.IsWindowVisible(h)) DockNative.ShowWindow(h, DockNative.SW_HIDE);
+                    _hiddenSecondary.Add(h);
+                }
+                else if (_hiddenSecondary.Remove(h)) DockNative.ShowWindow(h, DockNative.SW_SHOWNA);
+            }
+            _hiddenSecondary.RemoveWhere(x => !alive.Contains(x));   // Explorer перезапустился — старых окон больше нет
+        }
+
+        static void ShowSecondary()
+        {
+            foreach (var h in _hiddenSecondary) if (DockNative.IsWindow(h)) DockNative.ShowWindow(h, DockNative.SW_SHOWNA);
+            _hiddenSecondary.Clear();
+        }
+
         public static void Hide(Settings s)
         {
+            SyncSecondary();
             IntPtr tray = DockNative.ExplorerTray();
             if (tray == IntPtr.Zero) return;
 
@@ -45,6 +78,7 @@ namespace MizuEngine
         /// <summary>Windows иногда сама показывает панель (например, после «Пуска») — прячем снова. После «подглядывания» — когда мышь ушла.</summary>
         public static void EnsureHidden()
         {
+            SyncSecondary();
             IntPtr tray = DockNative.ExplorerTray();
             if (tray == IntPtr.Zero) return;
 
@@ -63,6 +97,7 @@ namespace MizuEngine
         public static void Restore(Settings s)
         {
             _peek = false;
+            ShowSecondary();
             IntPtr tray = DockNative.ExplorerTray();
             if (tray != IntPtr.Zero)
             {

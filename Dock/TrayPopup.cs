@@ -23,8 +23,8 @@ namespace MizuEngine
         readonly Border _card;
         readonly ScaleTransform _scale = new ScaleTransform(0.94, 0.94);
         readonly DispatcherTimer _watch = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(60) };
-        Point _anchor;          // центр низа панели (над кнопкой трея), в DIP экрана
-        Rect _keepZone;         // кнопка трея: нажатие по ней не закрывает панель (её закроет сам док)
+        Point _anchor;          // центр низа панели (над кнопкой трея), в пикселях экрана
+        Rect _keepZone;         // кнопка трея (пиксели экрана): нажатие по ней не закрывает панель (её закроет сам док)
         bool _wasDown;
 
         public bool IsOpen => IsVisible;
@@ -81,11 +81,12 @@ namespace MizuEngine
                 DockNative.EnableAcrylic(_h, unchecked((int)0x70201812));
             };
             SizeChanged += (s, e) => Place();
+            DpiChanged += (s, e) => Dispatcher.BeginInvoke(new Action(Place));   // открыли на мониторе с другим масштабом
             _watch.Tick += (s, e) => Watch();
             TrayHost.Changed += () => Dispatcher.BeginInvoke(new Action(() => { if (IsVisible) Fill(); }));
         }
 
-        /// <summary>Открыть над кнопкой трея. anchor — середина верхнего края кнопки, keep — сама кнопка (DIP экрана).</summary>
+        /// <summary>Открыть над кнопкой трея. anchor — середина верхнего края кнопки, keep — сама кнопка (пиксели экрана: доки бывают на разных мониторах).</summary>
         public void Open(Point anchor, Rect keep)
         {
             _anchor = anchor;
@@ -108,15 +109,34 @@ namespace MizuEngine
             Anim.To(this, OpacityProperty, 0, 140, done: () => { if (Opacity < 0.05) Hide(); });
         }
 
+        /// <summary>Над кнопкой трея, не вылезая за край монитора этой кнопки. Ставим в пикселях — масштаб мониторов бывает разный.</summary>
         void Place()
         {
             if (!IsVisible) return;
             double w = ActualWidth, h = ActualHeight;
-            var area = SystemParameters.WorkArea;
-            Left = Math.Max(area.Left + 6, Math.Min(SystemParameters.PrimaryScreenWidth - w - 6, _anchor.X - w / 2));
-            Top = _anchor.Y - h - 10;
-            if (_h != IntPtr.Zero)
-                DockNative.SetWindowRgn(_h, DockWindow.RoundRegion(this, new Rect(0, 0, w, h), 16), true);
+            if (_h == IntPtr.Zero) return;
+            var ar = new Native.RECT { Left = (int)_anchor.X, Top = (int)_anchor.Y - 1, Right = (int)_anchor.X + 1, Bottom = (int)_anchor.Y };
+            var mon = Monitors.BoundsOf(ar);
+            double scale = MonitorScale(ar);
+            int pw = (int)Math.Ceiling(w * scale), ph = (int)Math.Ceiling(h * scale), gap = (int)Math.Round(10 * scale), edge = (int)Math.Round(6 * scale);
+            int x = (int)Math.Round(_anchor.X - pw / 2.0);
+            x = Math.Max(mon.Left + edge, Math.Min(mon.Right - pw - edge, x));
+            int y = (int)Math.Round(_anchor.Y) - ph - gap;
+            DockNative.SetWindowPos(_h, IntPtr.Zero, x, y, 0, 0, 0x1 | 0x4 | DockNative.SWP_NOACTIVATE);   // SWP_NOSIZE | SWP_NOZORDER
+            DockNative.SetWindowRgn(_h, DockWindow.RoundRegion(this, new Rect(0, 0, w, h), 16), true);
+        }
+
+        [System.Runtime.InteropServices.DllImport("shcore.dll")] static extern int GetDpiForMonitor(IntPtr mon, int type, out uint x, out uint y);
+
+        static double MonitorScale(Native.RECT r)
+        {
+            try
+            {
+                IntPtr m = DockNative.MonitorFromRect(ref r, 2);
+                if (GetDpiForMonitor(m, 0, out uint dx, out _) == 0 && dx > 0) return dx / 96.0;
+            }
+            catch { }
+            return 1;
         }
 
         void Fill()
@@ -181,9 +201,7 @@ namespace MizuEngine
                 Point c;
                 try { c = PointFromScreen(new Point(p.X, p.Y)); } catch (InvalidOperationException) { _wasDown = down; return; }
                 bool inside = c.X >= 0 && c.Y >= 0 && c.X <= ActualWidth && c.Y <= ActualHeight;
-                double dpiX = VisualTreeHelper.GetDpi(this).DpiScaleX, dpiY = VisualTreeHelper.GetDpi(this).DpiScaleY;
-                var dip = new Point(p.X / dpiX, p.Y / dpiY);
-                if (!inside && !_keepZone.Contains(dip)) Dismiss();
+                if (!inside && !_keepZone.Contains(new Point(p.X, p.Y))) Dismiss();
             }
             _wasDown = down;
         }

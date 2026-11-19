@@ -38,6 +38,8 @@ namespace MizuEngine
         public bool DockAnimations { get; set; } = true;
         public List<DockPin> DockPins { get; set; }          // закреплённые значки по порядку (null — ещё не переносили с панели задач Windows)
         public bool DockTray { get; set; } = true;           // значки трея внутри дока
+        public bool DockAllMonitors { get; set; } = true;    // свой док на каждом мониторе (с 0.11); второй монитор подключили — док там сразу
+        public List<string> DockMonitorsOff { get; set; } = new List<string>();   // мониторы (MonitorInfo.Id), где дока не нужно
         public int SavedMinAnimate { get; set; } = -1;       // системная анимация сворачивания была включена (1) — вернуть при выходе
 
         // Dynamic Island
@@ -155,6 +157,7 @@ namespace MizuEngine
             DockSize = Math.Clamp(DockSize, 32, 80);
             DockMagnify = Math.Clamp(DockMagnify, 1.0, 2.2);
             DockTransparency = Math.Clamp(DockTransparency, 0, 100);
+            DockMonitorsOff ??= new List<string>();
             Flakes = Math.Clamp(Flakes, 50, 1500);
             if (Array.IndexOf(Weathers, Weather) < 0) Weather = "snow";
             if (Weather == "custom" && !File.Exists(CustomParticle)) Weather = "snow";

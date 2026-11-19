@@ -15,7 +15,7 @@ namespace MizuEngine
     {
         public SnowWindow Snow { get; private set; }
         /// <summary>Док живёт в потоке Shell; его методы сами переходят в свой поток, звать можно откуда угодно.</summary>
-        public DockWindow Dock => Shell.Dock;
+        public DockSet Dock => Shell.Dock;
         public Overlays Overlays { get; private set; }
         Dispatcher _d;
 

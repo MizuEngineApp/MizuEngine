@@ -623,6 +623,8 @@ namespace MizuEngine
             DockAutohideSwitch.IsChecked = _s.DockAutohide;
             DockAnimSwitch.IsChecked = _s.DockAnimations;
             DockTraySwitch.IsChecked = _s.DockTray;
+            DockAllMonSwitch.IsChecked = _s.DockAllMonitors;
+            FillDockMonitors();
             IslandOnSwitch.IsChecked = _s.IslandOn;
             IslandMediaSwitch.IsChecked = _s.IslandMedia;
             IslandNotifySwitch.IsChecked = _s.IslandNotify;
@@ -669,6 +671,55 @@ namespace MizuEngine
             _s.DockAutohide = DockAutohideSwitch.IsChecked == true;
             _s.DockAnimations = DockAnimSwitch.IsChecked == true;
             _s.DockTray = DockTraySwitch.IsChecked == true;
+            _s.Save();
+            _fx.Run(() => _fx.Dock.ApplySettings());
+        }
+
+        /// <summary>Список мониторов под переключателем «Док на всех мониторах»: у каждого не главного — свой переключатель.</summary>
+        void FillDockMonitors()
+        {
+            DockMonList.Children.Clear();
+            System.Collections.Generic.List<MonitorInfo> mons;
+            try { mons = Monitors.All(); } catch (Exception ex) { Settings.Log(ex); return; }
+            if (mons.Count < 2)
+            {
+                var one = new TextBlock { Text = Loc.T("dock.allmon.one"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 70, 0) };
+                one.SetResourceReference(TextBlock.ForegroundProperty, "SubText");
+                DockMonList.Children.Add(one);
+                return;
+            }
+            int n = 0;
+            foreach (var m in mons)
+            {
+                n++;
+                string name = string.IsNullOrWhiteSpace(m.Name) ? string.Format(Loc.T("dock.allmon.mon"), n) : m.Name;
+                string size = m.Bounds.Width + "×" + m.Bounds.Height;
+                var sw = new CheckBox
+                {
+                    Style = (Style)FindResource("Switch"),
+                    Content = m.Primary ? $"{name}  ·  {size}  ·  {Loc.T("dock.allmon.primary")}" : $"{name}  ·  {size}",
+                    IsChecked = m.Primary || (_s.DockAllMonitors && !_s.DockMonitorsOff.Contains(m.Id)),
+                    IsEnabled = !m.Primary && _s.DockAllMonitors,
+                    Tag = m.Id
+                };
+                if (!m.Primary) sw.Click += DockMonItem_Click;
+                DockMonList.Children.Add(sw);
+            }
+        }
+
+        void DockMon_Click(object sender, RoutedEventArgs e)
+        {
+            _s.DockAllMonitors = DockAllMonSwitch.IsChecked == true;
+            _s.Save();
+            FillDockMonitors();
+            _fx.Run(() => _fx.Dock.ApplySettings());
+        }
+
+        void DockMonItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not CheckBox sw || sw.Tag is not string id) return;
+            _s.DockMonitorsOff.Remove(id);
+            if (sw.IsChecked != true) _s.DockMonitorsOff.Add(id);
             _s.Save();
             _fx.Run(() => _fx.Dock.ApplySettings());
         }
@@ -876,7 +927,7 @@ namespace MizuEngine
         void OnUpdaterChanged()
         {
             RefreshUpdateUi();
-            if (Updater.Status == Updater.State.Available) ShowGate();
+            if (Updater.Status == Updater.State.Available) { if (Updater.ShouldNag) ShowGate(); }   // закрыли крестиком — до следующего запуска сама не всплывает
             else if (Updater.Status != Updater.State.Checking) HideGate();   // во время повторной проверки плашка не мигает
         }
 
@@ -939,7 +990,13 @@ namespace MizuEngine
             ShowToast(Loc.T("upd.openfail"));
         }
 
-        void UpdQuit_Click(object sender, RoutedEventArgs e) => Program.Quit();
+        /// <summary>Крестик или «Позже» на плашке: прячем её, интерфейс снова чёткий. Напомним при следующем запуске.</summary>
+        void GateClose_Click(object sender, RoutedEventArgs e)
+        {
+            if (Updater.Installing) return;
+            Updater.Dismiss();
+            HideGate();
+        }
 
         /// <summary>«Обновить сейчас»: скачать, проверить подпись, заменить exe и перезапуститься (Updater.InstallAsync).</summary>
         async void UpdInstall_Click(object sender, RoutedEventArgs e)
@@ -1022,10 +1079,14 @@ namespace MizuEngine
             }
         }
 
+        bool _gateOpen;
+
         void ShowGate()
         {
-            if (UpdateGate.Visibility == Visibility.Visible && UpdateGate.Opacity > 0.99) return;
+            if (_gateOpen && UpdateGate.Visibility == Visibility.Visible && UpdateGate.Opacity > 0.99) return;
+            _gateOpen = true;
             UpdateGate.Visibility = Visibility.Visible;
+            BlurBehindGate(true);
             Anim.To(UpdateGate, OpacityProperty, 1, 350, from: IsLoaded ? 0 : 1);
             var sc = (ScaleTransform)GateCard.RenderTransform;
             Anim.To(sc, ScaleTransform.ScaleXProperty, 1, 600, from: 0.9, delayMs: 60, ease: Anim.Spring);
@@ -1044,12 +1105,43 @@ namespace MizuEngine
         void HideGate()
         {
             if (UpdateGate.Visibility != Visibility.Visible) return;
+            _gateOpen = false;
+            BlurBehindGate(false);
             Anim.To(UpdateGate, OpacityProperty, 0, 300, done: () =>
             {
-                if (Updater.Status == Updater.State.Available) return;   // пока пряталась, обновление снова нашлось
+                if (_gateOpen) return;   // пока пряталась, плашку снова открыли
                 UpdateGate.Visibility = Visibility.Collapsed;
                 StopGateAnim();
             });
+        }
+
+        /// <summary>Пока открыта плашка обновления, меню и страница за ней мягко размыты; закрыли — снова чёткие.</summary>
+        void BlurBehindGate(bool on)
+        {
+            foreach (var el in new UIElement[] { SideCol, MainCol })
+            {
+                var target = el;
+                if (on)
+                {
+                    if (target.Effect is not System.Windows.Media.Effects.BlurEffect blur)
+                    {
+                        blur = new System.Windows.Media.Effects.BlurEffect
+                        {
+                            Radius = 0,
+                            KernelType = System.Windows.Media.Effects.KernelType.Gaussian,
+                            RenderingBias = System.Windows.Media.Effects.RenderingBias.Performance
+                        };
+                        target.Effect = blur;
+                    }
+                    Anim.To(blur, System.Windows.Media.Effects.BlurEffect.RadiusProperty, 16, IsLoaded ? 380 : 1);
+                }
+                else if (target.Effect is System.Windows.Media.Effects.BlurEffect blur)
+                {
+                    // Размытие убираем совсем, когда оно дошло до нуля, — иначе видеокарта зря считает его каждый кадр
+                    Anim.To(blur, System.Windows.Media.Effects.BlurEffect.RadiusProperty, 0, 300,
+                        done: () => { if (!_gateOpen && target.Effect == blur) target.Effect = null; });
+                }
+            }
         }
 
         void StopGateAnim() => ((TranslateTransform)GateArrow.RenderTransform).BeginAnimation(TranslateTransform.YProperty, null);
