@@ -265,9 +265,11 @@ namespace MizuEngine
 
         // ---------- галочки трёх цветов ----------
 
-        /// <summary>Цвета галочек: чёрная — владелец, синяя — официальный аккаунт, серая — 300+ часов в MizuEngine.</summary>
+        /// <summary>Цвета галочек: чёрная — владелец, синяя — официальный аккаунт, красная (бордовая) — администрация и тех. админы,
+        /// серая — 300+ часов в MizuEngine.</summary>
         static (Color a, Color b, Color glow) BadgeColors(string kind) => kind switch
         {
+            "red" => (Color.FromRgb(0xD0, 0x2C, 0x45), Color.FromRgb(0x4E, 0x06, 0x14), Color.FromRgb(0xE2, 0x3A, 0x55)),
             "black" => (Color.FromRgb(0x4A, 0x4A, 0x52), Color.FromRgb(0x05, 0x05, 0x08), Color.FromRgb(0x9A, 0x9A, 0xB0)),
             "gray" => (Color.FromRgb(0xD3, 0xD9, 0xE2), Color.FromRgb(0x7C, 0x86, 0x96), Color.FromRgb(0xB4, 0xBC, 0xC8)),
             _ => (Color.FromRgb(0x6F, 0xC3, 0xFF), Color.FromRgb(0x1D, 0x5B, 0xF0), Color.FromRgb(0x3B, 0x8C, 0xFF))
@@ -276,6 +278,7 @@ namespace MizuEngine
         public static string BadgeTip(string kind) => Loc.T(kind switch
         {
             "black" => "badge.black.tip",
+            "red" => "badge.red.tip",
             "gray" => "badge.gray.tip",
             _ => "badge.blue.tip"
         });
@@ -295,7 +298,9 @@ namespace MizuEngine
                 Fill = new LinearGradientBrush(ca, cb, 45)
             };
             if (kind == "black") { seal.Stroke = new SolidColorBrush(Color.FromArgb(0x70, 255, 255, 255)); seal.StrokeThickness = Math.Max(0.6, size / 26); }
+            if (kind == "red") { seal.Stroke = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xB0, 0xBC)); seal.StrokeThickness = Math.Max(0.6, size / 28); }
             g.Children.Add(seal);
+            if (kind == "red") AddGloss(g, size);
             g.Children.Add(new Path
             {
                 Data = (Geometry)Owner.FindResource("LogoM"), Fill = kind == "gray" ? new SolidColorBrush(Color.FromRgb(0x2E, 0x34, 0x40)) : Brushes.White,
@@ -328,6 +333,49 @@ namespace MizuEngine
             }
             g.ToolTip = BadgeTip(kind);
             return g;
+        }
+
+        /// <summary>
+        /// Блики бордовой галочки: неподвижный глянец сверху слева (как свет на эмали) и узкий блик, который раз в несколько
+        /// секунд пробегает по печати. 30 кадров в секунду, вне экрана анимация не считается (WPF сам её останавливает).
+        /// </summary>
+        static void AddGloss(Grid g, double size)
+        {
+            var clip = new EllipseGeometry(new Point(size / 2, size / 2), size * 0.43, size * 0.43);
+            var gloss = new System.Windows.Shapes.Ellipse
+            {
+                Width = size * 0.78, Height = size * 0.5, IsHitTestVisible = false,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, size * 0.1, 0, 0),
+                Fill = new LinearGradientBrush(Color.FromArgb(0x6E, 0xFF, 0xFF, 0xFF), Color.FromArgb(0x00, 0xFF, 0xFF, 0xFF), 90),
+                Clip = new EllipseGeometry(new Point(size * 0.39, size * 0.40), size * 0.43, size * 0.43)
+            };
+            g.Children.Add(gloss);
+
+            var shineHost = new Grid { Width = size, Height = size, Clip = clip, IsHitTestVisible = false };
+            var band = new System.Windows.Shapes.Rectangle
+            {
+                Width = size * 0.22, Height = size * 1.6, RenderTransformOrigin = new Point(0.5, 0.5),
+                Fill = new LinearGradientBrush(new GradientStopCollection
+                {
+                    new GradientStop(Color.FromArgb(0, 255, 255, 255), 0),
+                    new GradientStop(Color.FromArgb(0x8C, 255, 230, 235), 0.5),
+                    new GradientStop(Color.FromArgb(0, 255, 255, 255), 1)
+                }, 0)
+            };
+            var move = new TranslateTransform(-size, 0);
+            band.RenderTransform = new TransformGroup { Children = { new RotateTransform(25), move } };
+            shineHost.Children.Add(band);
+            g.Children.Add(shineHost);
+
+            // Пробег блика 0.9 с, потом пауза 2.6 с
+            var run = new System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames { RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever };
+            run.KeyFrames.Add(new System.Windows.Media.Animation.DiscreteDoubleKeyFrame(-size, System.Windows.Media.Animation.KeyTime.FromTimeSpan(TimeSpan.Zero)));
+            run.KeyFrames.Add(new System.Windows.Media.Animation.EasingDoubleKeyFrame(size, System.Windows.Media.Animation.KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.9)))
+            { EasingFunction = new System.Windows.Media.Animation.SineEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseInOut } });
+            run.KeyFrames.Add(new System.Windows.Media.Animation.DiscreteDoubleKeyFrame(size, System.Windows.Media.Animation.KeyTime.FromTimeSpan(TimeSpan.FromSeconds(3.5))));
+            System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(run, 30);
+            move.BeginAnimation(TranslateTransform.XProperty, run);
         }
 
         /// <summary>Крупная живая галочка (в шапке профиля, сообщества, группы).</summary>

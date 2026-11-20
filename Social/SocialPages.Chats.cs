@@ -273,6 +273,12 @@ namespace MizuEngine
             if (g.Badge != null) nameRow.Children.Add(Pad(UI.Badge(15, g.Badge), 6));
             title.Children.Add(nameRow);
             var membersText = UI.T("…", 12, sub: true);
+            // «N участников» под названием — клик открывает список (видят все участники группы)
+            membersText.Cursor = System.Windows.Input.Cursors.Hand;
+            membersText.ToolTip = Loc.T("groups.members");
+            membersText.MouseEnter += (s, e) => membersText.TextDecorations = TextDecorations.Underline;
+            membersText.MouseLeave += (s, e) => membersText.TextDecorations = null;
+            membersText.MouseLeftButtonUp += (s, e) => ShowMembers(g);
             title.Children.Add(membersText);
             var who = UI.Row(UI.Avatar(g.Look(), 38), title);
             head.Children.Add(who);

@@ -9,7 +9,7 @@ using System.Windows.Threading;
 
 namespace MizuEngine
 {
-    internal enum DockKind { App, Start, Separator, Tray, System, Clock }
+    internal enum DockKind { App, Start, Separator, Tray, System, Clock, Battery, BattApp, Launchpad }
 
     internal sealed class DockItem
     {
@@ -40,6 +40,7 @@ namespace MizuEngine
         public double BaseSize = 46, Magnify = 1.6;
         public bool Autohide;
         public int TrayCount;               // сколько значков в трее (рисуется на кнопке трея)
+        public List<DeviceBattery.Info> Batt = new List<DeviceBattery.Info>();   // заряд наушников, мыши, клавиатуры (с 0.11.4)
         public List<DockItem> Items = new List<DockItem>();
         public event Action<DockItem> ItemClicked;
         public event Action<DockItem, Point> ItemRightClicked;   // точка — в пикселях экрана
@@ -190,7 +191,7 @@ namespace MizuEngine
             if (near) Wake();
         }
 
-        public static bool IsIcon(DockItem it) => it.Kind == DockKind.App || it.Kind == DockKind.Start;
+        public static bool IsIcon(DockItem it) => it.Kind == DockKind.App || it.Kind == DockKind.Start || it.Kind == DockKind.BattApp || it.Kind == DockKind.Launchpad;
 
         double BaseWidth(DockItem it) => it.Kind switch
         {
@@ -198,8 +199,17 @@ namespace MizuEngine
             DockKind.Clock => BaseSize * 1.35 + 10,
             DockKind.System => BaseSize * 1.1 + (SystemInfoBattery.Present ? 22 : 8),
             DockKind.Tray => BaseSize * 0.62,
+            DockKind.Battery => BattWidth(),
             _ => BaseSize
         };
+
+        /// <summary>Ширина блока с зарядом: значок прибора + проценты (или вилка у проводного).</summary>
+        double BattWidth()
+        {
+            double w = 8;
+            foreach (var b in Batt) w += 20 + (b.Wired ? 14 : 8 + 7.2 * (b.Percent >= 100 ? 4 : b.Percent >= 10 ? 3 : 2)) + 8;
+            return Math.Max(BaseSize * 0.6, w);
+        }
 
         double BounceY(DockItem it)
         {
@@ -357,10 +367,10 @@ namespace MizuEngine
         {
             int from = Items.IndexOf(_drag);
             if (from < 0) return false;
-            int lo = 1, hi = Items.Count - 1;   // после «Пуска» и до системной части
+            int lo = 0, hi = Items.Count - 1;   // после «Пуска» и Launchpad и до системной части
+            while (lo < Items.Count && (Items[lo].Kind == DockKind.Start || Items[lo].Kind == DockKind.Launchpad)) lo++;
             int sys = Items.FindIndex(i => i.Key == "sep:sys");
             if (sys >= 0) hi = sys - 1;
-            if (Items.Count > 0 && Items[0].Kind != DockKind.Start) lo = 0;
 
             int to = from;
             for (int i = lo; i <= hi; i++)
@@ -492,7 +502,7 @@ namespace MizuEngine
             // Тёмная подложка под системной частью (трей, сеть, часы) — белый текст читается на любых обоях
             DockItem firstSys = null, lastSys = null;
             foreach (var it in Items)
-                if (it.Kind == DockKind.Tray || it.Kind == DockKind.System || it.Kind == DockKind.Clock)
+                if (it.Kind == DockKind.Tray || it.Kind == DockKind.System || it.Kind == DockKind.Clock || it.Kind == DockKind.Battery)
                 {
                     if (firstSys == null) firstSys = it;
                     lastSys = it;
@@ -543,13 +553,17 @@ namespace MizuEngine
             {
                 case DockKind.App:
                 case DockKind.Start:
+                case DockKind.BattApp:
+                case DockKind.Launchpad:
                 {
                     double s = it.Size * it.Presence;
                     var rect = new Rect(cx - s / 2, iconBottom - s - BounceY(it), s, s);
                     if (it == _pressed) dc.PushOpacity(0.6);
                     if (it.Kind == DockKind.Start) DrawStart(dc, rect);
+                    else if (it.Kind == DockKind.Launchpad) DrawLaunchpad(dc, rect);
                     else if (it.Icon != null) dc.DrawImage(it.Icon, rect);
                     else DrawGeneric(dc, rect, it.Name, dpi);
+                    if (it.Kind == DockKind.BattApp) DrawDownloadBadge(dc, rect);
                     if (it == _pressed) dc.Pop();
                     // Точка под открытым приложением (оранжевая — приложение просит внимания)
                     if (it.Windows.Count > 0 && !it.Away)
@@ -581,6 +595,26 @@ namespace MizuEngine
                     }
                     break;
                 }
+                case DockKind.Battery:
+                {
+                    if (it == _hot) dc.DrawRoundedRectangle(Hot, null, ItemBox(it), 12, 12);
+                    double x = cx - it.W / 2 + 8, mid = Pill.Top + Pill.Height / 2;
+                    foreach (var b in Batt)
+                    {
+                        var g = Fmt(DeviceBattery.Glyph(b.Kind), Glyphs, 16, White, dpi);
+                        ShadowText(dc, g, new Point(x, mid - g.Height / 2), White);
+                        x += 20;
+                        if (b.Wired) { if (b.Receiver) DrawSignal(dc, new Point(x + 5, mid)); else DrawPlug(dc, new Point(x + 5, mid)); x += 14; }
+                        else
+                        {
+                            var pct = Fmt(b.Percent + "%", Text, 11.5, b.Percent <= 15 ? LowBatt : White, dpi);
+                            ShadowText(dc, pct, new Point(x + 2, mid - pct.Height / 2), b.Percent <= 15 ? LowBatt : White);
+                            x += 8 + 7.2 * (b.Percent >= 100 ? 4 : b.Percent >= 10 ? 3 : 2);
+                        }
+                        x += 8;
+                    }
+                    break;
+                }
                 case DockKind.System:
                 {
                     if (it == _hot) dc.DrawRoundedRectangle(Hot, null, ItemBox(it), 12, 12);
@@ -598,6 +632,53 @@ namespace MizuEngine
                 }
             }
             dc.Pop();
+        }
+
+        static readonly Brush LowBatt = Frozen(new SolidColorBrush(Color.FromArgb(0xFF, 0xFF, 0x8A, 0x8A)));
+        static readonly Pen PlugPen = Frozen(new Pen(new SolidColorBrush(Color.FromArgb(0xFF, 0x9C, 0xD2, 0xFF)), 1.6) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round });
+
+        static readonly Brush BadgeBlue = Frozen(new LinearGradientBrush(Color.FromRgb(0x5A, 0xA8, 0xFF), Color.FromRgb(0x1F, 0x5F, 0xF0), 90));
+        static readonly Pen BadgeRim = Frozen(new Pen(new SolidColorBrush(Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF)), 1.6));
+        static readonly Pen ArrowPen = Frozen(new Pen(Brushes.White, 1.7) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round });
+
+        /// <summary>Синий кружок со стрелкой вниз в углу значка бренда: «скачать программу».</summary>
+        static void DrawDownloadBadge(DrawingContext dc, Rect icon)
+        {
+            double r = Math.Max(7, icon.Width * 0.2);
+            var c = new Point(icon.Right - r * 0.55, icon.Bottom - r * 0.55);
+            dc.DrawEllipse(BadgeBlue, BadgeRim, c, r, r);
+            double a = r * 0.5;
+            dc.DrawLine(ArrowPen, new Point(c.X, c.Y - a), new Point(c.X, c.Y + a * 0.75));
+            dc.DrawLine(ArrowPen, new Point(c.X - a * 0.65, c.Y + a * 0.1), new Point(c.X, c.Y + a * 0.75));
+            dc.DrawLine(ArrowPen, new Point(c.X + a * 0.65, c.Y + a * 0.1), new Point(c.X, c.Y + a * 0.75));
+        }
+
+        /// <summary>Дуги «сигнала» — беспроводное через USB-приёмник, Windows не знает заряд.</summary>
+        static void DrawSignal(DrawingContext dc, Point c)
+        {
+            var g = new StreamGeometry();
+            using (var ctx = g.Open())
+            {
+                foreach (double r in new[] { 4.0, 7.5 })
+                {
+                    ctx.BeginFigure(new Point(c.X - r * 0.8, c.Y + 3 - r * 0.6), false, false);
+                    ctx.ArcTo(new Point(c.X + r * 0.8, c.Y + 3 - r * 0.6), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
+                }
+            }
+            g.Freeze();
+            dc.DrawGeometry(null, PlugPen, g);
+            dc.DrawEllipse(PlugPen.Brush, null, new Point(c.X, c.Y + 3.5), 1.4, 1.4);
+        }
+
+        /// <summary>Вилка — у проводного прибора процента нет.</summary>
+        static void DrawPlug(DrawingContext dc, Point c)
+        {
+            dc.DrawLine(PlugPen, new Point(c.X - 2.5, c.Y - 5), new Point(c.X - 2.5, c.Y - 1.5));
+            dc.DrawLine(PlugPen, new Point(c.X + 2.5, c.Y - 5), new Point(c.X + 2.5, c.Y - 1.5));
+            dc.DrawLine(PlugPen, new Point(c.X - 4.5, c.Y - 1.5), new Point(c.X + 4.5, c.Y - 1.5));
+            dc.DrawLine(PlugPen, new Point(c.X - 3, c.Y - 1.5), new Point(c.X, c.Y + 2.5));
+            dc.DrawLine(PlugPen, new Point(c.X + 3, c.Y - 1.5), new Point(c.X, c.Y + 2.5));
+            dc.DrawLine(PlugPen, new Point(c.X, c.Y + 2.5), new Point(c.X, c.Y + 6));
         }
 
         /// <summary>Белый текст с мягкой тенью — так он читается и на светлых обоях.</summary>
@@ -631,6 +712,25 @@ namespace MizuEngine
             double x0 = tile.X + tile.Width / 2 - q - g / 2, y0 = tile.Y + tile.Height / 2 - q - g / 2;
             for (int i = 0; i < 4; i++)
                 dc.DrawRoundedRectangle(White, null, new Rect(x0 + (i % 2) * (q + g), y0 + (i / 2) * (q + g), q, q), q * 0.15, q * 0.15);
+        }
+
+        static readonly Brush LaunchBg = Frozen(Grad(Color.FromArgb(0xFF, 0x3A, 0x3F, 0x52), Color.FromArgb(0xFF, 0x16, 0x19, 0x24)));
+        static readonly Brush[] LaunchDots =
+        {
+            Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0x5F, 0x57))), Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0xBD, 0x2E))), Frozen(new SolidColorBrush(Color.FromRgb(0x28, 0xC8, 0x40))),
+            Frozen(new SolidColorBrush(Color.FromRgb(0x4D, 0xA8, 0xFF))), Frozen(new SolidColorBrush(Color.FromRgb(0xB1, 0x6C, 0xFF))), Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0x6F, 0xB5))),
+            Frozen(new SolidColorBrush(Color.FromRgb(0x5E, 0xE6, 0xD0))), Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0x9F, 0x43))), Frozen(new SolidColorBrush(Color.FromRgb(0xE8, 0xEC, 0xF4)))
+        };
+
+        /// <summary>Значок Launchpad: тёмная плитка с сеткой 3×3 цветных квадратиков.</summary>
+        static void DrawLaunchpad(DrawingContext dc, Rect r)
+        {
+            var tile = new Rect(r.X + r.Width * 0.06, r.Y + r.Height * 0.06, r.Width * 0.88, r.Height * 0.88);
+            dc.DrawRoundedRectangle(LaunchBg, Rim, tile, tile.Width * 0.24, tile.Width * 0.24);
+            double q = tile.Width * 0.16, g = tile.Width * 0.06;
+            double x0 = tile.X + (tile.Width - 3 * q - 2 * g) / 2, y0 = tile.Y + (tile.Height - 3 * q - 2 * g) / 2;
+            for (int i = 0; i < 9; i++)
+                dc.DrawRoundedRectangle(LaunchDots[i], null, new Rect(x0 + (i % 3) * (q + g), y0 + (i / 3) * (q + g), q, q), q * 0.28, q * 0.28);
         }
 
         static void DrawGeneric(DrawingContext dc, Rect r, string name, double dpi)

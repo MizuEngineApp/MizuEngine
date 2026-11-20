@@ -126,7 +126,7 @@ namespace MizuEngine
             }
 
             var stats = new System.Windows.Controls.Primitives.UniformGrid { Columns = 2, Margin = new Thickness(0, 18, 0, 0) };
-            var sMembers = Stat("community.members", () => { });
+            var sMembers = Stat("community.members", () => _ = ShowCommunityMembers(c));
             var sPosts = Stat("community.posts", () => { });
             stats.Children.Add(sMembers.ui);
             stats.Children.Add(sPosts.ui);

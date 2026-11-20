@@ -481,6 +481,7 @@
                                 <RadioButton x:Name="NavHome" Style="{StaticResource NavItem}" Tag="&#xE80F;" Content="{DynamicResource nav.home}" IsChecked="True" Checked="Nav_Checked"/>
                                 <RadioButton x:Name="NavSnow" Style="{StaticResource NavItem}" Tag="❄" Content="{DynamicResource nav.snow}" Checked="Nav_Checked"/>
                                 <RadioButton x:Name="NavDock" Style="{StaticResource NavItem}" Tag="&#xE8A9;" Content="{DynamicResource nav.dock}" Checked="Nav_Checked"/>
+                                <RadioButton x:Name="NavIsland" Style="{StaticResource NavItem}" Tag="&#xE9F5;" Content="Dynamic Island" Checked="Nav_Checked"/>
                                 <RadioButton x:Name="NavWe" Style="{StaticResource NavItem}" Tag="&#xE8B9;" Content="{DynamicResource nav.we}" Checked="Nav_Checked"/>
                                 <RadioButton x:Name="NavWallpapers" Style="{StaticResource NavItem}" Tag="&#xE771;" Content="{DynamicResource nav.wallpapers}" Checked="Nav_Checked"/>
                                 <RadioButton x:Name="NavLiveBg" Style="{StaticResource NavItem}" Tag="&#xE7F4;" Content="{DynamicResource nav.livebg}" Checked="Nav_Checked"/>
@@ -726,28 +727,145 @@
                                     <TextBlock Text="{DynamicResource dock.hint}" Style="{StaticResource Sub}" FontSize="12.5" Margin="0" TextWrapping="Wrap"/>
                                 </Border>
 
-                                <!-- Dynamic Island -->
-                                <TextBlock Text="Dynamic Island" Style="{StaticResource H2}" Margin="0,28,0,0"/>
-                                <TextBlock Text="{DynamicResource island.sub}" Style="{StaticResource Sub}"/>
+                                <!-- Заряд наушников, мыши и клавиатуры -->
+                                <TextBlock Text="{DynamicResource batt.title}" Style="{StaticResource H2}" Margin="0,28,0,0"/>
+                                <TextBlock Text="{DynamicResource batt.sub}" Style="{StaticResource Sub}"/>
                                 <Border Style="{StaticResource Panel}" Margin="0,14,0,0">
                                     <StackPanel>
-                                        <CheckBox x:Name="IslandOnSwitch" Style="{StaticResource Switch}" Content="{DynamicResource island.on}" FontWeight="SemiBold" Click="IslandOption_Click"/>
-                                        <CheckBox x:Name="IslandMediaSwitch" Style="{StaticResource Switch}" Content="{DynamicResource island.media}" Click="IslandOption_Click"/>
-                                        <CheckBox x:Name="IslandNotifySwitch" Style="{StaticResource Switch}" Content="{DynamicResource island.notify}" Click="IslandOption_Click"/>
-                                        <CheckBox x:Name="IslandHideSwitch" Style="{StaticResource Switch}" Content="{DynamicResource island.hide}" Click="IslandOption_Click"/>
+                                        <CheckBox x:Name="BattDockSwitch" Style="{StaticResource Switch}" Content="{DynamicResource batt.dock}" FontWeight="SemiBold" Click="BattOption_Click"/>
+                                        <CheckBox x:Name="BattTraySwitch" Style="{StaticResource Switch}" Content="{DynamicResource batt.tray}" Click="BattOption_Click"/>
+                                        <TextBlock Text="{DynamicResource batt.tray.d}" Style="{StaticResource Sub}" FontSize="12" Margin="0,0,70,6"/>
                                     </StackPanel>
                                 </Border>
                                 <Border Style="{StaticResource Panel}" Margin="0,14,0,0">
                                     <StackPanel>
-                                        <TextBlock Text="{DynamicResource island.fly}" FontWeight="SemiBold"/>
-                                        <TextBlock Text="{DynamicResource island.fly.d}" Style="{StaticResource Sub}" FontSize="12" Margin="0,4,40,0"/>
-                                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                                            <RadioButton x:Name="IslandFlyUp" Style="{StaticResource Pill}" GroupName="islandfly" Content="{DynamicResource island.fly.up}" Click="IslandOption_Click" Margin="0,0,8,0"/>
-                                            <RadioButton x:Name="IslandFlyDown" Style="{StaticResource Pill}" GroupName="islandfly" Content="{DynamicResource island.fly.down}" Click="IslandOption_Click"/>
+                                        <TextBlock Text="{DynamicResource batt.which}" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                        <CheckBox x:Name="BattHpSwitch" Style="{StaticResource Switch}" Content="{DynamicResource batt.hp}" Click="BattOption_Click"/>
+                                        <CheckBox x:Name="BattMouseSwitch" Style="{StaticResource Switch}" Content="{DynamicResource batt.mouse}" Click="BattOption_Click"/>
+                                        <CheckBox x:Name="BattKbSwitch" Style="{StaticResource Switch}" Content="{DynamicResource batt.kb}" Click="BattOption_Click"/>
+                                        <TextBlock Text="{DynamicResource batt.found}" Style="{StaticResource Sub}" FontSize="12" Margin="0,12,0,4"/>
+                                        <StackPanel x:Name="BattList"/>
+                                        <TextBlock Text="{DynamicResource batt.hint}" Style="{StaticResource Sub}" FontSize="12" Margin="0,8,40,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource Panel}" Margin="0,14,0,0">
+                                    <StackPanel>
+                                        <CheckBox x:Name="BattWarnSwitch" Style="{StaticResource Switch}" Content="{DynamicResource batt.warn}" FontWeight="SemiBold" Click="BattWarn_Click"/>
+                                        <TextBlock Text="{DynamicResource batt.warn.d}" Style="{StaticResource Sub}" FontSize="12" Margin="0,2,70,4" TextWrapping="Wrap"/>
+                                        <StackPanel x:Name="BattWarnBox">
+                                            <DockPanel Margin="0,10,0,8">
+                                                <TextBlock x:Name="BattWarnAtValue" DockPanel.Dock="Right" Foreground="{DynamicResource SubText}"/>
+                                                <TextBlock Text="{DynamicResource batt.warn.at}"/>
+                                            </DockPanel>
+                                            <Slider x:Name="BattWarnAtSlider" Style="{StaticResource NiceSlider}" Minimum="5" Maximum="50" ValueChanged="BattWarnSlider_Changed"/>
+                                            <DockPanel Margin="0,16,0,8">
+                                                <TextBlock x:Name="BattWarnLowValue" DockPanel.Dock="Right" Foreground="{DynamicResource SubText}"/>
+                                                <TextBlock Text="{DynamicResource batt.warn.low}"/>
+                                            </DockPanel>
+                                            <Slider x:Name="BattWarnLowSlider" Style="{StaticResource NiceSlider}" Minimum="1" Maximum="20" ValueChanged="BattWarnSlider_Changed"/>
+                                            <CheckBox x:Name="BattWarnSoundSwitch" Style="{StaticResource Switch}" Content="{DynamicResource batt.warn.sound}" Click="BattWarn_Click" Margin="0,14,0,0"/>
+                                            <Button Style="{StaticResource GlassButton}" Content="{DynamicResource batt.warn.test}" HorizontalAlignment="Left" HorizontalContentAlignment="Center" Padding="16,8" Margin="0,12,0,0" Click="BattWarnTest_Click"/>
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
+                        </ScrollViewer>
+
+                        <!-- Dynamic Island (отдельная вкладка с 0.11.4) -->
+                        <ScrollViewer x:Name="PageIsland" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+                            <Grid Margin="0,0,14,0" MaxWidth="1040" HorizontalAlignment="Left">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" MinWidth="380"/>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="400"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Dynamic Island" Style="{StaticResource H1}"/>
+                                    <TextBlock Text="{DynamicResource island.sub}" Style="{StaticResource Sub}" Margin="0,4,0,8"/>
+                                <Border Style="{StaticResource Panel}" Margin="0,14,0,0">
+                                        <StackPanel>
+                                            <CheckBox x:Name="IslandOnSwitch" Style="{StaticResource Switch}" Content="{DynamicResource island.on}" FontWeight="SemiBold" Click="IslandOption_Click"/>
+                                            <CheckBox x:Name="IslandMediaSwitch" Style="{StaticResource Switch}" Content="{DynamicResource island.media}" Click="IslandOption_Click"/>
+                                            <CheckBox x:Name="IslandNotifySwitch" Style="{StaticResource Switch}" Content="{DynamicResource island.notify}" Click="IslandOption_Click"/>
+                                            <CheckBox x:Name="IslandHideSwitch" Style="{StaticResource Switch}" Content="{DynamicResource island.hide}" Click="IslandOption_Click"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource Panel}" Margin="0,14,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="{DynamicResource island.fly}" FontWeight="SemiBold"/>
+                                            <TextBlock Text="{DynamicResource island.fly.d}" Style="{StaticResource Sub}" FontSize="12" Margin="0,4,40,0"/>
+                                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                                <RadioButton x:Name="IslandFlyUp" Style="{StaticResource Pill}" GroupName="islandfly" Content="{DynamicResource island.fly.up}" Click="IslandOption_Click" Margin="0,0,8,0"/>
+                                                <RadioButton x:Name="IslandFlyDown" Style="{StaticResource Pill}" GroupName="islandfly" Content="{DynamicResource island.fly.down}" Click="IslandOption_Click"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Style="{StaticResource Panel}" Margin="0,14,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="{DynamicResource island.layer}" FontWeight="SemiBold"/>
+                                            <TextBlock Text="{DynamicResource island.layer.d}" Style="{StaticResource Sub}" FontSize="12" Margin="0,4,30,0" TextWrapping="Wrap"/>
+                                            <WrapPanel Margin="0,12,0,0">
+                                                <RadioButton x:Name="IslandLayerTop" Style="{StaticResource Pill}" GroupName="islandlayer" Content="{DynamicResource island.layer.top}" Click="IslandLayer_Click" Margin="0,0,8,8"/>
+                                                <RadioButton x:Name="IslandLayerAlways" Style="{StaticResource Pill}" GroupName="islandlayer" Content="{DynamicResource island.layer.always}" Click="IslandLayer_Click" Margin="0,0,8,8"/>
+                                                <RadioButton x:Name="IslandLayerDesktop" Style="{StaticResource Pill}" GroupName="islandlayer" Content="{DynamicResource island.layer.desktop}" Click="IslandLayer_Click" Margin="0,0,8,8"/>
+                                            </WrapPanel>
+                                            <TextBlock x:Name="IslandLayerHint" Style="{StaticResource Sub}" FontSize="12" Margin="0,2,30,0" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource Panel}" Margin="0,14,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="{DynamicResource island.shape}" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                                            <DockPanel Margin="0,0,0,8">
+                                                <TextBlock x:Name="IslandWValue" DockPanel.Dock="Right" Foreground="{DynamicResource SubText}"/>
+                                                <TextBlock Text="{DynamicResource island.width}"/>
+                                            </DockPanel>
+                                            <Slider x:Name="IslandWSlider" Style="{StaticResource NiceSlider}" Minimum="90" Maximum="260" ValueChanged="IslandSlider_Changed"/>
+                                            <DockPanel Margin="0,18,0,8">
+                                                <TextBlock x:Name="IslandHValue" DockPanel.Dock="Right" Foreground="{DynamicResource SubText}"/>
+                                                <TextBlock Text="{DynamicResource island.height}"/>
+                                            </DockPanel>
+                                            <Slider x:Name="IslandHSlider" Style="{StaticResource NiceSlider}" Minimum="24" Maximum="56" ValueChanged="IslandSlider_Changed"/>
+                                            <DockPanel Margin="0,18,0,8">
+                                                <TextBlock x:Name="IslandRValue" DockPanel.Dock="Right" Foreground="{DynamicResource SubText}"/>
+                                                <TextBlock Text="{DynamicResource island.round}"/>
+                                            </DockPanel>
+                                            <Slider x:Name="IslandRSlider" Style="{StaticResource NiceSlider}" Minimum="0" Maximum="100" ValueChanged="IslandSlider_Changed"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource Panel}" Margin="0,14,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="{DynamicResource island.anim}" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                                            <DockPanel Margin="0,0,0,8">
+                                                <TextBlock x:Name="IslandBValue" DockPanel.Dock="Right" Foreground="{DynamicResource SubText}"/>
+                                                <TextBlock Text="{DynamicResource island.bounce}"/>
+                                            </DockPanel>
+                                            <Slider x:Name="IslandBSlider" Style="{StaticResource NiceSlider}" Minimum="0" Maximum="100" ValueChanged="IslandSlider_Changed"/>
+                                            <DockPanel Margin="0,18,0,8">
+                                                <TextBlock x:Name="IslandSValue" DockPanel.Dock="Right" Foreground="{DynamicResource SubText}"/>
+                                                <TextBlock Text="{DynamicResource island.spring}"/>
+                                            </DockPanel>
+                                            <Slider x:Name="IslandSSlider" Style="{StaticResource NiceSlider}" Minimum="0" Maximum="100" ValueChanged="IslandSlider_Changed"/>
+                                            <TextBlock Text="{DynamicResource island.anim.d}" Style="{StaticResource Sub}" FontSize="12" Margin="0,12,30,0" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+
+                                <!-- Живой предпросмотр -->
+                                <StackPanel Grid.Column="2" Margin="0,70,0,0" VerticalAlignment="Top">
+                                    <Border Style="{StaticResource Panel}" Padding="14">
+                                        <StackPanel>
+                                            <TextBlock Text="{DynamicResource island.preview}" FontWeight="SemiBold" Margin="2,0,0,10"/>
+                                            <Border x:Name="IslandPreviewHost" Height="230"/>
+                                            <DockPanel Margin="0,14,0,0">
+                                                <Button DockPanel.Dock="Right" Style="{StaticResource GlassButton}" Content="{DynamicResource island.reset}" Margin="8,0,0,0" Click="IslandReset_Click"/>
+                                                <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource island.test}" Click="IslandTest_Click"/>
+                                            </DockPanel>
+                                            <TextBlock Text="{DynamicResource island.test.d}" Style="{StaticResource Sub}" FontSize="12" Margin="2,10,0,0" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
                         </ScrollViewer>
 
                         <!-- Wallpaper Engine -->

@@ -23,6 +23,10 @@ namespace MizuEngine
         public DateTime PlusUntil;
         public string OnlineVis = "everyone";   // кто видит «в сети»: everyone / followers / friends / nobody
         public string GroupAdd = "everyone";    // кто может сразу добавлять в группы: everyone / invites (только приглашения)
+        // С 0.11.4: ссылки (как подключения в Discord), кто видит «Сейчас слушает», оформление Mizu Plus
+        public List<ProfileLink> Links = new List<ProfileLink>();
+        public string NpVis = "everyone";       // everyone / friends / nobody
+        public string BannerFx, BannerAnim, AvatarFrame, AvatarAnim;
 
         /// <summary>Подписчик Mizu Plus — у ника значок Plus.</summary>
         public bool IsPlus => PlusForever || PlusUntil > DateTime.UtcNow;
@@ -62,7 +66,13 @@ namespace MizuEngine
                 PlusForever = (bool?)j["plus_forever"] ?? false,
                 PlusUntil = SocialApi.Utc(j["plus_until"]),
                 OnlineVis = (string)j["online_vis"] ?? "everyone",
-                GroupAdd = (string)j["group_add"] ?? "everyone"
+                GroupAdd = (string)j["group_add"] ?? "everyone",
+                Links = ProfileLinks.Parse(j["links"]),
+                NpVis = (string)j["np_vis"] ?? "everyone",
+                BannerFx = (string)j["banner_fx"],
+                BannerAnim = (string)j["banner_anim"],
+                AvatarFrame = (string)j["avatar_frame"],
+                AvatarAnim = (string)j["avatar_anim"]
             }.Fix();
         }
 
@@ -83,6 +93,7 @@ namespace MizuEngine
         public string Id, Email;
         public DateTime SignedUp, LastSeen;
         public bool Online;
+        public string AppVersion;    // с какой версии MizuEngine заходил(а) последний раз (null — версия до 0.11.4)
         public Profile Profile;
     }
 
@@ -258,7 +269,7 @@ namespace MizuEngine
 
         /// <summary>Цвет галочки. Старые профили без цвета, но с галочкой — синяя.</summary>
         public static string BadgeKind(string badge, bool verified) =>
-            badge == "blue" || badge == "black" || badge == "gray" ? badge : verified ? "blue" : null;
+            badge == "blue" || badge == "black" || badge == "gray" || badge == "red" ? badge : verified ? "blue" : null;
 
         // ---------- профили ----------
 
@@ -524,6 +535,20 @@ namespace MizuEngine
 
         public static Task<int> MembersCount(long id) => Supa.Count("community_members", $"community_id=eq.{id}");
 
+        /// <summary>Подписчики сообщества (новые сверху) с датой вступления. Список видят все.</summary>
+        public static async Task<List<(Profile user, DateTime since)>> CommunityMembers(long id, int offset, int limit)
+        {
+            var rows = await Supa.Select($"community_members?community_id=eq.{id}&select=created_at,p:user_id(*)&order=created_at.desc&offset={offset}&limit={limit}");
+            var res = new List<(Profile, DateTime)>();
+            if (rows == null) return res;
+            foreach (var r in rows)
+            {
+                var p = Profile.From(r["p"]);
+                if (p != null) res.Add((p, Utc(r["created_at"])));
+            }
+            return res;
+        }
+
         public static async Task<bool> IsMember(long id)
         {
             var rows = await Supa.Select($"community_members?community_id=eq.{id}&user_id=eq.{Supa.Q(Supa.Me)}&select=user_id");
@@ -612,7 +637,17 @@ namespace MizuEngine
 
         /// <summary>«Я в сети» (раз в минуту, пока программа запущена) или «не в сети» (при выходе).</summary>
         public static Task PresencePing(bool online) =>
-            Supa.Call("presence_ping", new JsonObject { ["p_online"] = online });
+            Supa.Call("presence_ping", new JsonObject { ["p_online"] = online, ["p_version"] = AppVersion });
+
+        /// <summary>Версия программы «0.11.4» — её видят админы в списке людей.</summary>
+        public static string AppVersion
+        {
+            get
+            {
+                var v = typeof(SocialApi).Assembly.GetName().Version;
+                return v == null ? null : $"{v.Major}.{v.Minor}.{Math.Max(0, v.Build)}";
+            }
+        }
 
         /// <summary>Кто из людей в сети. Тех, кто скрыл статус, в ответе нет.</summary>
         public static async Task<Dictionary<string, Presence>> GetPresence(IEnumerable<string> ids)
@@ -643,7 +678,7 @@ namespace MizuEngine
             var info = rows.Select(r => new AdminUser
             {
                 Id = (string)r["id"], Email = (string)r["email"], SignedUp = Utc(r["signed_up"]),
-                LastSeen = Utc(r["last_seen"]), Online = (bool?)r["online"] ?? false
+                LastSeen = Utc(r["last_seen"]), Online = (bool?)r["online"] ?? false, AppVersion = (string)r["app_version"]
             }).Where(u => u.Id != null).ToList();
             var ps = await Supa.Select($"profiles?id=in.({string.Join(",", info.Select(u => Supa.Q(u.Id)))})&select=*");
             var map = ps?.Select(Profile.From).Where(p => p != null).ToDictionary(p => p.Id) ?? new Dictionary<string, Profile>();
@@ -933,6 +968,15 @@ namespace MizuEngine
             if (e.Contains("post_empty")) return Loc.T("err.post_empty");
             if (e.Contains("post_reports") && (e.Contains("duplicate") || e.Contains("unique"))) return Loc.T("posts.report_already");
             if (e.Contains("row-level security") && e.Contains("post_reports")) return Loc.T("err.report_own");
+            // 0.11.4: ссылки и оформление профиля (v08.sql)
+            if (e.Contains("links_limit")) return string.Format(Loc.T("err.links_limit"), Math.Max(1, NumberAfter(e, "links_limit:")));
+            if (e.Contains("link_bad")) return Loc.T("err.link_bad");
+            if (e.Contains("link_duplicate")) return Loc.T("err.link_duplicate");
+            if (e.Contains("plus_only")) return Loc.T("err.plus_only");
+            if (e.Contains("anim_bad")) return Loc.T("err.upload");
+            if ((e.Contains("could not find") || e.Contains("does not exist") || e.Contains("schema cache")) &&
+                (e.Contains("links") || e.Contains("np_vis") || e.Contains("banner_fx") || e.Contains("avatar_frame") || e.Contains("banner_anim") || e.Contains("avatar_anim") || e.Contains("now_playing")))
+                return Loc.T("err.server_old");
             if (e.Contains("nick_cooldown")) return Loc.T("err.nick_cooldown");
             if (e.Contains("handle_format")) return Loc.T("err.handle_format");
             if (e.Contains("profiles_handle_key") || (e.Contains("duplicate") && e.Contains("handle"))) return Loc.T("err.handle_taken");

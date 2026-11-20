@@ -52,6 +52,23 @@ namespace MizuEngine
         public bool IslandNotify { get; set; } = true;       // сообщения MizuEngine
         public bool IslandHideIdle { get; set; }             // прятать, когда ничего не происходит
         public string IslandFly { get; set; } = "up";        // up — плееры, таймеры и MizuEngine сворачиваются в Island; down — в док
+        public int IslandWidth { get; set; } = 126;          // капсула в покое (вкладка «Dynamic Island», с 0.11.4)
+        public int IslandHeight { get; set; } = 32;
+        public int IslandRound { get; set; } = 100;          // скругление, % (100 — круглые края)
+        public int IslandBounce { get; set; } = 35;          // сила подпрыгивания, % (0 — без прыжка)
+        public int IslandSpring { get; set; } = 32;          // упругость пружины, % (больше — быстрее и жёстче)
+        public string IslandLayer { get; set; } = "top";     // top — поверх окон, прячется в играх; always — всегда; desktop — на рабочем столе
+
+        // Заряд наушников, мыши и клавиатуры (с 0.11.4)
+        public bool BattDock { get; set; } = true;           // в доке MizuEngine, рядом с часами
+        public bool BattTray { get; set; }                   // значками в трее Windows (для обычной панели задач)
+        public bool BattHeadphones { get; set; } = true;
+        public bool BattMouse { get; set; } = true;
+        public bool BattKeyboard { get; set; } = true;
+        public bool BattWarn { get; set; } = true;           // предупреждать о низком заряде в Dynamic Island
+        public int BattWarnAt { get; set; } = 15;            // первое предупреждение, %
+        public int BattWarnLow { get; set; } = 5;            // второе, %
+        public bool BattWarnSound { get; set; } = true;
 
         // Чаты: звуки и уведомления
         public bool MsgNotify { get; set; } = true;
@@ -121,6 +138,14 @@ namespace MizuEngine
         public bool MuzuleIsland { get; set; } = true;                   // «думает…» и готовый ответ в Dynamic Island
         public bool MuzuleTyping { get; set; } = true;                   // ответ плавно «печатается»
 
+        // Launchpad и Spotlight (0.11.4)
+        public bool LaunchpadOn { get; set; } = true;          // Ctrl+Alt+L
+        public bool LaunchpadDock { get; set; } = true;        // значок в доке рядом с «Пуском»
+        public bool LaunchpadCorner { get; set; } = true;      // мышь в левый нижний угол экрана
+        public List<LaunchSlot> LaunchpadLayout { get; set; } = new List<LaunchSlot>();   // порядок значков и папки
+        public bool SpotlightOn { get; set; } = true;          // Ctrl+Alt+Space
+        public string SpotlightEngine { get; set; } = "google";   // поиск в интернете: google / bing / yandex / baidu / duckduckgo
+
         /// <summary>Все эффекты рабочего стола (custom — свои частицы из PNG).</summary>
         public static readonly string[] Weathers =
         {
@@ -163,6 +188,9 @@ namespace MizuEngine
             DockTransparency = Math.Clamp(DockTransparency, 0, 100);
             DockMonitorsOff ??= new List<string>();
             WePreviews ??= new Dictionary<string, string>();
+            LaunchpadLayout ??= new List<LaunchSlot>();
+            LaunchpadLayout.RemoveAll(x => x == null || (string.IsNullOrEmpty(x.App) && (x.Apps == null || x.Apps.Count == 0)));
+            if (SpotlightEngine != "google" && SpotlightEngine != "bing" && SpotlightEngine != "yandex" && SpotlightEngine != "baidu" && SpotlightEngine != "duckduckgo") SpotlightEngine = "google";
             if (string.IsNullOrEmpty(WeTarget)) WeTarget = "all";
             Flakes = Math.Clamp(Flakes, 50, 1500);
             if (Array.IndexOf(Weathers, Weather) < 0) Weather = "snow";
@@ -179,6 +207,14 @@ namespace MizuEngine
             SoundPack = UiSounds.Valid(SoundPack);
             UiVolume = Math.Clamp(UiVolume, 0, 100);
             if (IslandFly != "up" && IslandFly != "down") IslandFly = "up";
+            IslandWidth = Math.Clamp(IslandWidth, 90, 260);
+            IslandHeight = Math.Clamp(IslandHeight, 24, 56);
+            IslandRound = Math.Clamp(IslandRound, 0, 100);
+            IslandBounce = Math.Clamp(IslandBounce, 0, 100);
+            IslandSpring = Math.Clamp(IslandSpring, 0, 100);
+            if (IslandLayer != "top" && IslandLayer != "always" && IslandLayer != "desktop") IslandLayer = "top";
+            BattWarnAt = Math.Clamp(BattWarnAt, 5, 50);
+            BattWarnLow = Math.Clamp(BattWarnLow, 1, Math.Max(1, BattWarnAt - 1));
             MsgVolume = Math.Clamp(MsgVolume, 0, 100);
             if (!ChatSounds.IsValid(MsgSoundIn, true, MsgCustomIn)) MsgSoundIn = "tg";
             if (!ChatSounds.IsValid(MsgSoundOut, false, MsgCustomOut)) MsgSoundOut = "swoosh";
@@ -234,5 +270,16 @@ namespace MizuEngine
             }
             catch { }
         }
+    }
+
+    /// <summary>Место в Launchpad: программа (App) или папка (Folder + Apps).</summary>
+    internal sealed class LaunchSlot
+    {
+        public string App { get; set; }
+        public string Folder { get; set; }
+        public List<string> Apps { get; set; }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool IsFolder => Apps != null;
     }
 }

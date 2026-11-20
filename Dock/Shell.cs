@@ -23,6 +23,9 @@ namespace MizuEngine
         /// <summary>Открыть главное окно MizuEngine (его ставит Program; вызывается из любого потока).</summary>
         public static Action OpenApp;
 
+        /// <summary>Открыть/закрыть Launchpad (его ставит Program; вызывается из любого потока).</summary>
+        public static Action OpenLaunchpad;
+
         static IntPtr _hook;
         static DockNative.WinEventProc _proc;   // делегат держим, иначе сборщик мусора удалит его, а Windows продолжит вызывать
         static DateTime _lastMinimize;

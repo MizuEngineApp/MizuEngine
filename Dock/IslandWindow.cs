@@ -86,16 +86,54 @@ namespace MizuEngine
             Height = WinH;
         }
 
+        /// <summary>
+        /// Где живёт капсула (вкладка «Dynamic Island» → «Когда видна»):
+        /// top — поверх окон, прячется в полноэкранных играх и видео (как раньше);
+        /// always — всегда поверх, даже в играх (CS2 и т. п. в режиме «в окне без рамки»);
+        /// desktop — на рабочем столе: окна программ её закрывают; на время уведомления она выходит наверх.
+        /// </summary>
+        string Layer => _s.IslandLayer == "always" || _s.IslandLayer == "desktop" ? _s.IslandLayer : "top";
+
         void OnTick()
         {
-            // В полноэкранной игре или видео капсула прячется
-            bool fs = _fullscreen.ForegroundIsFullscreen(_h, Native.GetSystemMetrics(0), Native.GetSystemMetrics(1));
+            string layer = Layer;
+            if (_view.Animating && DateTime.UtcNow > _animUntil) _view.Animating = false;
+            // В полноэкранной игре или видео капсула прячется (кроме режима «всегда»)
+            bool fs = layer == "top" && _fullscreen.ForegroundIsFullscreen(_h, Native.GetSystemMetrics(0), Native.GetSystemMetrics(1));
             _view.Fullscreen = fs;
             _view.CleanupParked();
             _view.Refresh();
-            if (_shown && _h != IntPtr.Zero)   // капсула всегда поверх всего (другие «поверх всех» окна могли перекрыть)
-                DockNative.SetWindowPos(_h, new IntPtr(-1), 0, 0, 0, 0, DockNative.SWP_NOMOVE | DockNative.SWP_NOSIZE | DockNative.SWP_NOACTIVATE);
+            ApplyLayer();
         }
+
+        bool _onTop = true;
+
+        /// <summary>Поставить капсулу на нужный «этаж»: поверх всех окон или прямо над рабочим столом.</summary>
+        void ApplyLayer()
+        {
+            if (!_shown || _h == IntPtr.Zero) return;
+            const uint flags = DockNative.SWP_NOMOVE | DockNative.SWP_NOSIZE | DockNative.SWP_NOACTIVATE;
+            bool top = Layer != "desktop" || _view.Notifying || _view.Animating;
+            if (top)
+            {
+                if (!_onTop) { Topmost = true; _onTop = true; }
+                // Другие «поверх всех» окна могли перекрыть — поднимаемся снова
+                DockNative.SetWindowPos(_h, new IntPtr(-1), 0, 0, 0, 0, flags);
+                return;
+            }
+            if (_onTop) { Topmost = false; _onTop = false; DockNative.SetWindowPos(_h, new IntPtr(-2), 0, 0, 0, 0, flags); }
+            // Сразу над рабочим столом: под окно, которое лежит прямо над Progman (рабочий стол с ярлыками)
+            IntPtr desk = FindWindowW("Progman", null);
+            if (desk == IntPtr.Zero) return;
+            IntPtr above = GetWindow(desk, 3);   // GW_HWNDPREV
+            if (above == _h || above == IntPtr.Zero) return;
+            DockNative.SetWindowPos(_h, above, 0, 0, 0, 0, flags);
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern IntPtr FindWindowW(string cls, string title);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr GetWindow(IntPtr h, uint cmd);
 
         void UpdateRegion()
         {
@@ -112,9 +150,17 @@ namespace MizuEngine
         /// <summary>Поднять капсулу над окном анимации: окно втягивается ПОД неё.</summary>
         public void RaiseAbove()
         {
+            if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(RaiseAbove)); return; }
+            _view.Animating = true;   // на время «джинна» капсула наверху даже в режиме «на рабочем столе»
+            _animUntil = DateTime.UtcNow.AddSeconds(1.5);
             if (_shown && _h != IntPtr.Zero)
+            {
+                if (!_onTop) { Topmost = true; _onTop = true; }
                 DockNative.SetWindowPos(_h, new IntPtr(-1), 0, 0, 0, 0, DockNative.SWP_NOMOVE | DockNative.SWP_NOSIZE | DockNative.SWP_NOACTIVATE);
+            }
         }
+
+        DateTime _animUntil;
 
         /// <summary>Окна сворачиваются в капсулу (настройка «вверх») — только когда капсула включена.</summary>
         public bool FliesUp => _s.IslandOn && _s.IslandFly == "up";
@@ -164,6 +210,20 @@ namespace MizuEngine
 
         public void Unpark(IntPtr hwnd) => _view.Unpark(hwnd);
 
+        /// <summary>Поменяли форму или пружину во вкладке «Dynamic Island» — капсула перетекает в новый размер.</summary>
+        public void Reshape()
+        {
+            if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(Reshape)); return; }
+            _view.Refresh();
+        }
+
+        /// <summary>Кнопка «Проверить прыжок»: капсула подпрыгивает так же, как когда в неё влетает окно.</summary>
+        public void TestBounce()
+        {
+            if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(TestBounce)); return; }
+            _view.TestBounce();
+        }
+
         /// <summary>Сообщение MizuEngine: капсула раскрывается с аватаркой и текстом.</summary>
         /// <summary>Можно ли сейчас показать уведомление в капсуле (включены Island и уведомления).</summary>
         public bool CanNotify => _s.IslandOn && _s.IslandNotify;
@@ -173,6 +233,7 @@ namespace MizuEngine
             if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(() => Notify(title, text, avatarUrl, click))); return; }
             if (!_s.IslandOn || !_s.IslandNotify) return;
             _view.ShowNotification(title, text, avatarUrl, click);
+            ApplyLayer();   // «на рабочем столе» — уведомление всё равно выходит поверх окон
         }
 
         /// <summary>Агент Muzule работает: капсула с переливающимся шаром и статусом («думает…», «меняет тему…»). null — убрать.</summary>
@@ -193,6 +254,8 @@ namespace MizuEngine
         readonly Settings _s;
         public event Action ShapeChanged;
         public bool Fullscreen;
+        public bool Animating;                                   // идёт «джинн» в капсулу или из неё
+        public bool Notifying => DateTime.UtcNow < _notifyUntil;
 
         Mode _mode = Mode.Hidden, _content = Mode.Hidden;
         double _w, _h, _vw, _vh, _alpha, _contentAlpha;
@@ -246,10 +309,10 @@ namespace MizuEngine
         }
 
         public Rect PillRect => _w < 1 || _h < 1 || _alpha < 0.02 ? Rect.Empty : new Rect((ActualWidth - _w) / 2, TopGap, _w, _h);
-        public double Radius => _mode == Mode.Expanded || (_content == Mode.Expanded && _h > 60) ? Math.Min(_h / 2, 34) : _h / 2;
+        public double Radius => IslandShape.Radius(_s, _h, _mode == Mode.Expanded || (_content == Mode.Expanded && _h > 60));
 
         /// <summary>Куда втягивается окно: маленькая капсула по центру (даже если сейчас она раскрыта или спрятана).</summary>
-        public Rect FlyRect => new Rect(ActualWidth / 2 - 63, TopGap, 126, 32);
+        public Rect FlyRect => new Rect(ActualWidth / 2 - _s.IslandWidth / 2.0, TopGap, _s.IslandWidth, _s.IslandHeight);
 
         // ================== данные ==================
 
@@ -333,24 +396,29 @@ namespace MizuEngine
                 _mode = m;
                 if (_content != m) _contentAlpha = Math.Min(_contentAlpha, 0.3);   // старое содержимое быстро гаснет
             }
+            // Размер капсулы в покое — из вкладки «Dynamic Island»; остальные режимы растут от него
+            double iw = _s.IslandWidth, ih = _s.IslandHeight;
             (_tw, _th) = m switch
             {
-                Mode.Hidden => (90.0, 24.0),
-                Mode.Idle => (_parked.Count == 0 ? 126.0 : 104.0 + _parked.Count * 26.0, 32.0),
-                Mode.Media => (304.0, 34.0),
+                Mode.Hidden => (iw * 0.7, ih * 0.75),
+                Mode.Idle => (_parked.Count == 0 ? iw : Math.Max(iw, iw - 22 + _parked.Count * 26.0), ih),
+                Mode.Media => (Math.Max(304.0, iw + 150), Math.Max(34.0, ih + 2)),
                 Mode.Expanded => (420.0, 160.0),
-                Mode.Agent => (300.0, 36.0),
-                _ => (384.0, 72.0)
+                Mode.Agent => (Math.Max(300.0, iw + 150), Math.Max(36.0, ih + 4)),
+                _ => (384.0, Math.Max(72.0, ih + 40))
             };
             Wake();
         }
 
         void Kick(double w, double h)
         {
-            _vw += w * 6;
-            _vh += h * 6;
+            double k = IslandShape.Kick(_s);   // сила подпрыгивания из вкладки «Dynamic Island» (0 — без прыжка)
+            _vw += w * 6 * k;
+            _vh += h * 6 * k;
             Wake();
         }
+
+        public void TestBounce() => Kick(30, 9);
 
         void Wake()
         {
@@ -381,7 +449,7 @@ namespace MizuEngine
             if (_expanded && !_hover && (t - _leaveAt).TotalSeconds > 0.6) { _expanded = false; Refresh(); }
             if (_mode == Mode.Notify && t >= _notifyUntil) Refresh();
 
-            bool moving = Spring(ref _w, ref _vw, _tw, dt) | Spring(ref _h, ref _vh, _th, dt);
+            bool moving = IslandShape.Step(ref _w, ref _vw, _tw, dt, _s) | IslandShape.Step(ref _h, ref _vh, _th, dt, _s);
             moving |= Approach(ref _alpha, _mode == Mode.Hidden ? 0 : 1, dt, 10);
             bool near = Math.Abs(_w - _tw) < 14 && Math.Abs(_h - _th) < 8;
             if (_content != _mode && _contentAlpha < 0.05) { _content = _mode; }
@@ -393,16 +461,6 @@ namespace MizuEngine
             // Музыка играет — «эквалайзер» двигается; иначе, когда всё успокоилось, кадры не считаем
             bool live = (_media?.Playing == true && (_mode == Mode.Media || _mode == Mode.Expanded)) || _hover || _mode == Mode.Notify || _mode == Mode.Agent;
             if (!moving && !live) Sleep();
-        }
-
-        static bool Spring(ref double x, ref double v, double target, double dt)
-        {
-            if (Math.Abs(target - x) < 0.25 && Math.Abs(v) < 2) { if (x != target) { x = target; v = 0; return true; } return false; }
-            double a = 300 * (target - x) - 25 * v;   // жёсткость и затухание — небольшой «перелёт», как в iOS
-            v += a * dt;
-            x += v * dt;
-            if (x < 0) { x = 0; v = 0; }
-            return true;
         }
 
         static bool Approach(ref double v, double target, double dt, double speed)

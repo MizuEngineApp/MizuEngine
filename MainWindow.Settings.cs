@@ -271,6 +271,23 @@ namespace MizuEngine
                 }));
             }
             priv.Children.Add(groupRow);
+            // «Сейчас слушает» в профиле (0.11.4): кто видит трек из плеера
+            var npLabel = UI.L("np.vis", 13.5, wrap: true);
+            npLabel.Margin = new Thickness(0, 14, 0, 6);
+            priv.Children.Add(npLabel);
+            var npRow = new WrapPanel();
+            string npv = me?.NpVis ?? "everyone";
+            foreach (var k in new[] { "everyone", "friends", "nobody" })
+            {
+                string key = k;
+                npRow.Children.Add(UI.Tab("np.vis." + key, "npvis", npv == key, async (o, e) =>
+                {
+                    string r = await SocialApi.UpdateMe(new System.Text.Json.Nodes.JsonObject { ["np_vis"] = key });
+                    if (r == null) NowPlayingSync.Refresh();
+                    ShowToast(r ?? Loc.T("set.saved"));
+                }));
+            }
+            priv.Children.Add(npRow);
             var privHint = UI.L("set.acc.privacy.d", 12, sub: true, wrap: true);
             privHint.Margin = new Thickness(0, 10, 0, 0);
             priv.Children.Add(privHint);

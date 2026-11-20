@@ -371,6 +371,7 @@ namespace MizuEngine
 
             // 1) «Пуск» и закреплённые значки — всегда на своих местах
             var specs = new List<DockItem> { new DockItem { Kind = DockKind.Start, Key = "start", Name = Loc.T("dock.start") } };
+            if (_s.LaunchpadOn && _s.LaunchpadDock) specs.Add(new DockItem { Kind = DockKind.Launchpad, Key = "launchpad", Name = "Launchpad" });
             var claimed = new HashSet<IntPtr>();
             var keys = new HashSet<string>();
             foreach (var pin in _s.DockPins ?? new List<DockPin>())
@@ -420,15 +421,33 @@ namespace MizuEngine
                 if (it.Windows.Count > 1) it.Windows.Sort((a, b) => Seen(a).CompareTo(Seen(b)));
                 it.Attention = it.Windows.Exists(h => _attention.Contains(h));
             }
-            if (extra.Count > 0 && specs.Count > 1) specs.Add(new DockItem { Kind = DockKind.Separator, Key = "sep:apps" });
+            if (extra.Count > 0 && specs.Exists(x => x.Kind == DockKind.App)) specs.Add(new DockItem { Kind = DockKind.Separator, Key = "sep:apps" });
             specs.AddRange(extra);
 
+            // Заряд наушников, мыши и клавиатуры — рядом с часами (или отдельно в конце, если часы выключены)
+            var batt = _s.BattDock ? DeviceBattery.Visible(_s) : new List<DeviceBattery.Info>();
+            _view.Batt = batt;
+            var battItem = batt.Count > 0 ? new DockItem { Kind = DockKind.Battery, Key = "batt", Name = BattLabel(batt) } : null;
+            // Мышь на приёмнике без программы бренда — значок бренда со стрелкой «скачать» (по одному на бренд)
+            var appItems = new List<DockItem>();
+            foreach (var b in batt)
+                if (b.NeedsApp && !appItems.Exists(x => x.Launch == b.AppUrl))
+                    appItems.Add(new DockItem { Kind = DockKind.BattApp, Key = "battapp:" + b.AppUrl, Launch = b.AppUrl, IconPath = b.AppSite,
+                        Name = string.Format(Loc.T("batt.app.dock"), string.IsNullOrEmpty(b.AppBrand) ? b.Name : b.AppBrand, DeviceBattery.KindName(b.Kind).ToLowerInvariant()) });
             if (_s.DockClock)
             {
                 specs.Add(new DockItem { Kind = DockKind.Separator, Key = "sep:sys" });
                 specs.Add(new DockItem { Kind = DockKind.Tray, Key = "tray", Name = Loc.T("dock.tray") });
                 specs.Add(new DockItem { Kind = DockKind.System, Key = "system", Name = Loc.T("dock.system") });
+                specs.AddRange(appItems);
+                if (battItem != null) specs.Add(battItem);
                 specs.Add(new DockItem { Kind = DockKind.Clock, Key = "clock", Name = Loc.T("dock.notifications") });
+            }
+            else if (battItem != null)
+            {
+                specs.Add(new DockItem { Kind = DockKind.Separator, Key = "sep:sys" });
+                specs.AddRange(appItems);
+                specs.Add(battItem);
             }
 
             if (!_view.Dragging) Merge(specs);
@@ -467,14 +486,15 @@ namespace MizuEngine
                     if (sp.Attention && !ex.Attention) _view.Nudge(ex);
                     ex.Attention = sp.Attention;
                     ex.PresenceTarget = 1;
-                    if (ex.IconPath != sp.IconPath && sp.IconPath != null && ex.Icon == null) LoadIcon(ex, sp.IconPath);
+                    if (ex.IconPath != sp.IconPath && sp.IconPath != null && ex.Icon == null && ex.Kind != DockKind.BattApp) LoadIcon(ex, sp.IconPath);
                     if (!wasRunning && ex.Windows.Count > 0 && !ex.Away && ex.Bounce >= 0) _view.Wake();
                     result.Add(ex);
                 }
                 else
                 {
                     sp.Presence = 0;
-                    LoadIcon(sp, sp.IconPath);
+                    if (sp.Kind == DockKind.BattApp) LoadBrandIcon(sp);
+                    else LoadIcon(sp, sp.IconPath);
                     result.Add(sp);
                 }
             }
@@ -495,6 +515,14 @@ namespace MizuEngine
             _view.Items = result;
             _view.InvalidateVisual();
             if (result.Exists(x => x.Presence != x.PresenceTarget)) _view.Wake();
+        }
+
+        /// <summary>Значок бренда — значок сайта производителя (кэшируется на диске, как аватарки).</summary>
+        void LoadBrandIcon(DockItem item)
+        {
+            if (string.IsNullOrEmpty(item.IconPath)) return;
+            ImageCache.Load("https://icon.horse/icon/" + item.IconPath, 128, true,
+                bmp => Dispatcher.BeginInvoke(new Action(() => { if (bmp != null) { item.Icon = bmp; _view.InvalidateVisual(); } })));
         }
 
         void LoadIcon(DockItem item, string path)
@@ -522,12 +550,36 @@ namespace MizuEngine
 
         // ================== клики ==================
 
+        static void OpenUrl(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return;
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); }
+            catch (Exception e) { Settings.Log(e); }
+        }
+
+        /// <summary>Подпись над блоком заряда: «Наушники 82% · Мышь 64% · Клавиатура — провод».</summary>
+        static string BattLabel(List<DeviceBattery.Info> list)
+        {
+            var parts = new List<string>();
+            foreach (var b in list) parts.Add(DeviceBattery.KindName(b.Kind) + " " + b.State);
+            return string.Join("  ·  ", parts);
+        }
+
         void Activate(DockItem it)
         {
             switch (it.Kind)
             {
+                case DockKind.Battery:
+                    Shell.OpenApp?.Invoke();   // настройки заряда — на странице «Док»
+                    return;
+                case DockKind.BattApp:
+                    OpenUrl(it.Launch);        // страница программы бренда — с ней заряд станет точным
+                    return;
                 case DockKind.Start:
                     OpenStart();
+                    return;
+                case DockKind.Launchpad:
+                    Shell.OpenLaunchpad?.Invoke();
                     return;
                 case DockKind.Tray:
                     ToggleTray(it);

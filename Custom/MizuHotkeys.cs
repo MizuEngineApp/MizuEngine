@@ -16,7 +16,9 @@ namespace MizuEngine
         {
             (101, 'E', "hk.effects"), (102, 'D', "hk.dock"), (103, 'F', "hk.fps"),
             (104, 'W', "hk.wallpaper"), (105, 'G', "hk.widgets"), (106, 'O', "hk.open"),
-            (107, 'M', "hk.muzule")   // быстрое окно Muzule (только Mizu Plus; можно выключить во вкладке Muzule)
+            (107, 'M', "hk.muzule"),  // быстрое окно Muzule (только Mizu Plus; можно выключить во вкладке Muzule)
+            (108, ' ', "hk.spotlight"),   // Spotlight: Ctrl+Alt+Space (Ctrl+Space — переключение раскладки, его не трогаем)
+            (109, 'L', "hk.launchpad")    // Launchpad
         };
 
         /// <summary>Что-то поменяли не из окна (например, агент Muzule) — открытое окно обновит свои переключатели.</summary>
@@ -28,13 +30,16 @@ namespace MizuEngine
         static Settings _s;
         static Action _open;
 
+        /// <summary>Как показать клавишу: пробел — словом.</summary>
+        public static string KeyName(char key) => key == ' ' ? "Space" : key.ToString();
+
         public static void Init(Effects fx, Settings s, Action open)
         {
             _fx = fx; _s = s; _open = open;
             _window = new HwndSource(new HwndSourceParameters("MizuEngine hotkeys") { ParentWindow = new IntPtr(-3) });   // окно только для сообщений
             _window.AddHook((IntPtr h, int msg, IntPtr w, IntPtr l, ref bool handled) =>
             {
-                if (msg == 0x0312 && w.ToInt32() >= 101 && w.ToInt32() <= 107) { handled = true; Fire(w.ToInt32()); }   // WM_HOTKEY
+                if (msg == 0x0312 && w.ToInt32() >= 101 && w.ToInt32() <= 109) { handled = true; Fire(w.ToInt32()); }   // WM_HOTKEY
                 return IntPtr.Zero;
             });
             Apply();
@@ -49,6 +54,8 @@ namespace MizuEngine
                 foreach (var k in Keys)
                 {
                     if (k.id == 107 && !_s.MuzuleSpotlight) continue;   // быстрый Muzule выключен — Ctrl+Alt+M свободна для других программ
+                    if (k.id == 108 && !_s.SpotlightOn) continue;
+                    if (k.id == 109 && !_s.LaunchpadOn) continue;
                     RegisterHotKey(_window.Handle, k.id, 0x1 | 0x2 | 0x4000, k.key);   // Alt+Ctrl, без автоповтора
                 }
                 _registered = true;
@@ -100,6 +107,12 @@ namespace MizuEngine
                     return;
                 case 107:
                     Muzule.Spotlight();
+                    return;
+                case 108:
+                    Spotlight.Toggle();
+                    return;
+                case 109:
+                    Launchpad.Toggle();
                     return;
             }
             Toggled?.Invoke();

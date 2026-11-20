@@ -575,10 +575,12 @@ namespace MizuEngine
             var body = new StackPanel();
             card.Child = body;
 
-            body.Children.Add(Banner(p.BannerUrl, 150, isMe ? () => _ = ChangeImage("banner", 1600) : (Action)null));
+            var bannerUi = Banner(p.BannerUrl, 150, isMe ? () => _ = ChangeImage("banner", 1600) : (Action)null);
+            DecorateBanner(bannerUi, p);   // живой баннер и свой GIF/MP4 (Mizu Plus)
+            body.Children.Add(bannerUi);
 
             // Аватарка по центру, наполовину на баннере
-            var ring = new Border { CornerRadius = new CornerRadius(62), BorderThickness = new Thickness(4), HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, -58, 0, 0), Child = p.Bot ? UI.Avatar(p, 112) : Online.WithDot(UI.Avatar(p, 112), p.Id, 112) };
+            var ring = new Border { CornerRadius = new CornerRadius(62), BorderThickness = new Thickness(4), HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, -58, 0, 0), Child = p.Bot ? ProfileAvatar(p, 112) : Online.WithDot(ProfileAvatar(p, 112), p.Id, 112) };
             ring.SetResourceReference(Border.BorderBrushProperty, "WinBg");
             ring.SetResourceReference(Border.BackgroundProperty, "WinBg");
             Motion.Hero(ring, "avatar:" + p.Id);
@@ -589,7 +591,7 @@ namespace MizuEngine
                 ring.ToolTip = Loc.T("profile.avatar");
                 ring.MouseLeftButtonUp += async (s, e) => await ChangeImage("avatar", 512);
             }
-            body.Children.Add(ring);
+            body.Children.Add(WithFrame(ring, p, 120));   // рамка аватарки (Mizu Plus)
 
             var info = new StackPanel { Margin = new Thickness(22, 10, 22, 20) };
             var nameRow = UI.Row(UI.T(p.Nickname, 24, true));
@@ -619,6 +621,12 @@ namespace MizuEngine
                 bio.Margin = new Thickness(0, 12, 0, 0);
                 info.Children.Add(bio);
             }
+            // Владелец MizuEngine: строка наклонным серым шрифтом, как у Дурова в Telegram
+            if (p.Number == 1) info.Children.Add(OfficialLine(!string.IsNullOrWhiteSpace(p.Bio)));
+            // Ссылки: Telegram, Discord, YouTube, TikTok, Spotify — круглые значки, клик открывает
+            if (p.Links != null && p.Links.Count > 0) info.Children.Add(ProfileLinks.Row(p.Links));
+            // Сейчас слушает (если человек не скрыл)
+            if (!p.Bot) info.Children.Add(NowPlayingCard(p));
 
             // Счётчики — три стеклянные плитки
             var stats = new System.Windows.Controls.Primitives.UniformGrid { Columns = 3, Margin = new Thickness(0, 18, 0, 0) };
@@ -1296,6 +1304,24 @@ namespace MizuEngine
             }, 9);
             var logout = UI.Glass("", "profile.logout", async (s, e) => { await Supa.SignOutAsync(); }, 9);
             AddAction(actions, edit);
+            // Ссылки и оформление — свои панели, как «Редактировать»
+            Border linksCard = null, decorCard = null;
+            var linksBtn = UI.Glass("\uE71B", "links.button", (s, e) =>
+            {
+                if (linksCard != null) { var old = linksCard; linksCard = null; Motion.Exit(old, 0, () => root.Children.Remove(old)); return; }
+                linksCard = LinksPanel(p);
+                root.Children.Insert(root.Children.Count > 1 ? 1 : root.Children.Count, linksCard);
+                Motion.Enter(linksCard);
+            }, 9);
+            var decorBtn = UI.Glass("\uE790", "decor.button", (s, e) =>
+            {
+                if (decorCard != null) { var old = decorCard; decorCard = null; Motion.Exit(old, 0, () => root.Children.Remove(old)); return; }
+                decorCard = DecorPanel(p);
+                root.Children.Insert(root.Children.Count > 1 ? 1 : root.Children.Count, decorCard);
+                Motion.Enter(decorCard);
+            }, 9);
+            AddAction(actions, linksBtn);
+            AddAction(actions, decorBtn);
             if (p.IsAdmin) AddAction(actions, UI.Glass("\uE7EF", "admin.open", async (s, e) => await ShowAdminHome(), 9));
             AddAction(actions, logout);
         }
@@ -1373,6 +1399,7 @@ namespace MizuEngine
             hint.Margin = new Thickness(2, 6, 0, 0);
             sp.Children.Add(hint);
             sp.Children.Add(UI.Labeled("profile.bio", bio));
+            sp.Children.Add(NowPlayingVisibility(p));
 
             var error = UI.Error();
             sp.Children.Add(error);

@@ -129,6 +129,7 @@ namespace MizuEngine
             {
                 Watchdog.MarkCleanExit();   // это обычный выход, а не сбой — сторожу перезапускать не нужно
                 Online.GoOffline();   // друзья сразу видят серый кружок
+                NowPlayingSync.Clear();   // и «Сейчас слушает» пропадает сразу
                 Muzule.StopAll();     // агенты Muzule прерывают запросы (что успели — сохранено)
                 LiveWallpaper.Stop();
                 CursorPacks.Restore();
@@ -139,6 +140,10 @@ namespace MizuEngine
 
             using var tray = new Tray(fx, settings, Open, Exit);
             Shell.OpenApp = () => app.Dispatcher.BeginInvoke(new Action(Open));   // «Настройки дока» в меню дока
+            // Заряд наушников, мыши и клавиатуры: в доке рядом с часами и (по желанию) значками в трее Windows
+            DeviceBattery.Changed += () => Shell.Run(() => Shell.Dock?.RefreshAll());
+            using var battTray = new BatteryTray(settings, app.Dispatcher, () => app.Dispatcher.BeginInvoke(new Action(Open)));
+            DeviceBattery.Start(settings);
             // Новые сообщения: цифра на «Чатах», звук и уведомление в углу окна или экрана — даже когда окно закрыто
             Notifier.OpenMain = Open;
             Notifier.Init();
@@ -147,6 +152,13 @@ namespace MizuEngine
             Diagnostics.RegisterPanicKey(Exit);
             Muzule.Init(settings, fx, Open);   // Claude и агенты (только Mizu Plus): вкладка Muzule и быстрое окно Ctrl+Alt+M
             MizuHotkeys.Init(fx, settings, Open);
+            // Launchpad (Ctrl+Alt+L, значок в доке, левый нижний угол) и Spotlight (Ctrl+Alt+Space)
+            Launchpad.Init(settings);
+            Spotlight.Init(settings);
+            HotCorner.Start(settings);
+            Shell.OpenLaunchpad = () => app.Dispatcher.BeginInvoke(new Action(Launchpad.Toggle));
+            // «Сейчас слушает» в профиле: трек из любого плеера на ПК
+            NowPlayingSync.Start();
             _exit = Exit;
 
             // Обновления: проверка при запуске и каждые 2 часа. Окно открыто — там плашка; закрыто (программа в трее) —

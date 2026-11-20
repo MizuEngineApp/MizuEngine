@@ -27,14 +27,16 @@ namespace MizuEngine
     internal sealed class WindowAnimator : Window
     {
         const double MinimizeTime = 0.46, RestoreTime = 0.40;   // секунд
-        const int HoldFrames = 2, FadeFrames = 6;   // после разворачивания картинка держится 2 кадра (окно успевает отрисоваться) и гаснет
+        const int HoldFrames = 2, FadeFrames = 3;   // без «плаща» DWM: картинка держится, пока окно дорисовывается (см. HoldTime), и быстро гаснет
+        const double HoldTime = 0.11;               // секунд — за это время почти любое окно успевает нарисоваться
         const int Cols = 8, Rows = 96;               // сетка: 96 рядов дают гладкий изгиб без «ступенек»
 
         static readonly IntPtr TopMost = new IntPtr(-1);
 
         IntPtr _h, _target, _thumb;
-        bool _minimizing, _up, _active, _meshMode, _realDone;
-        int _phase, _prep, _settle, _wait;   // 0 — подготовка, 1 — анимация, 2 — окно развёрнуто, картинка гаснет поверх него
+        bool _minimizing, _up, _active, _meshMode, _realDone, _cloaked;
+        TimeSpan _settleAt;
+        int _phase, _prep, _settle, _wait, _fade;   // 0 — подготовка, 1 — анимация, 2 — окно развёрнуто, картинка гаснет поверх него
         double _t;
         TimeSpan _last;
         int _sw, _sh;
@@ -48,6 +50,9 @@ namespace MizuEngine
         readonly MeshGeometry3D _geo = new MeshGeometry3D();
         readonly ImageBrush _brush = new ImageBrush { ViewportUnits = BrushMappingMode.Absolute, Viewport = new Rect(0, 0, 1, 1), Stretch = Stretch.Fill };
         readonly DispatcherTimer _safety = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2.2) };
+        // Последний кадр разворачивания — картинка окна один в один по пикселям (сетка 3D даёт лёгкое «мыло»)
+        readonly Image _flat = new Image { Stretch = Stretch.Fill, SnapsToDevicePixels = true, UseLayoutRounding = true, IsHitTestVisible = false,
+                                            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Visibility = Visibility.Collapsed };
 
         /// <summary>Анимация закончилась: окно, свернули ли его (true) или развернули, летело ли вверх (в Dynamic Island).</summary>
         public event Action<IntPtr, bool, bool> Finished;
@@ -84,7 +89,11 @@ namespace MizuEngine
             _vp.Camera = _cam;
             _vp.Children.Add(new ModelVisual3D { Content = group });
             RenderOptions.SetBitmapScalingMode(_vp, BitmapScalingMode.HighQuality);
-            Content = _vp;
+            RenderOptions.SetBitmapScalingMode(_flat, BitmapScalingMode.NearestNeighbor);
+            var root = new Grid { ClipToBounds = true };
+            root.Children.Add(_vp);
+            root.Children.Add(_flat);
+            Content = root;
 
             SourceInitialized += (s, e) =>
             {
@@ -223,7 +232,13 @@ namespace MizuEngine
             _up = up;
             _full = full;
             _wl = frame.Left; _wt = frame.Top; _wr = frame.Right; _wb = frame.Bottom;
-            _il = icon.Left; _it = icon.Top; _ir = icon.Right; _ib = icon.Bottom;
+            // Как в macOS: «горлышко» воронки уже значка (≈40% его ширины), и окно стекает только в верхнюю
+            // половину значка — не вылезает ни по бокам, ни снизу (док и капсула рисуются поверх анимации)
+            double iw = icon.Width, ih = icon.Height, cx = (icon.Left + icon.Right) / 2;
+            double neck = Math.Max(12, Math.Min(Math.Min(iw, ih * 1.4) * 0.42, Math.Max(12, iw * 0.6)));
+            _il = cx - neck / 2; _ir = cx + neck / 2;
+            if (up) { _it = icon.Bottom - ih * 0.5; _ib = icon.Bottom - ih * 0.08; }
+            else { _it = icon.Top + ih * 0.08; _ib = icon.Top + ih * 0.5; }
 
             // Окно анимации — только на площади «окно + значок», а не на весь экран: видеокарте меньше работы
             int l = (int)Math.Floor(Math.Min(full.Left, icon.Left)) - 2, t = (int)Math.Floor(Math.Min(full.Top, icon.Top)) - 2;
@@ -275,22 +290,38 @@ namespace MizuEngine
                 DwmFlush();
                 if (_meshMode) HideThumb();
                 if (_minimizing && !_realDone) { _realDone = true; SetMinimized(_target, true); }
+                else if (!_minimizing && _meshMode && Cloak(_target, true))
+                {
+                    // Как в Windhawk: окно разворачиваем сразу, но под «плащом» DWM — его не видно, а нарисоваться оно
+                    // успевает за время анимации. В конце снимаем плащ — окно появляется уже готовым, без серого кадра.
+                    _cloaked = true;
+                    _realDone = true;
+                    SetMinimized(_target, false);
+                }
                 _phase = 1;
                 return;
             }
 
             if (_phase == 2)
             {
-                // Окно уже развёрнуто под картинкой: держим её пару кадров, пока окно дорисовывается, потом плавно гасим
                 _settle++;
-                if (_settle <= HoldFrames) return;
+                if (_cloaked)
+                {
+                    // Окно давно нарисовано под плащом: снимаем плащ, ждём кадр DWM и убираем картинку — подмена незаметна
+                    if (_settle == 1) { Cloak(_target, false); _cloaked = false; DwmFlush(); return; }
+                    Finish();
+                    return;
+                }
+                // Без плаща: окно развернулось под точной (пиксель в пиксель) картинкой — держим её, пока окно дорисовывается
+                if ((now - _settleAt).TotalSeconds < HoldTime || _settle <= HoldFrames) return;
                 // Окно программы от администратора разворачивается само и чуть позже — держим картинку, пока оно не появится (до ~0.5 с)
-                if (_settle == HoldFrames + 1 && Native.IsIconic(_target) && _wait < 30) { _wait++; _settle = HoldFrames; return; }
-                if (_settle == HoldFrames + 1 && _wait > 0) DockNative.SetForegroundWindow(_target);
-                double a = 1 - (double)(_settle - HoldFrames) / FadeFrames;
+                if (Native.IsIconic(_target) && _wait < 30) { _wait++; return; }
+                if (_wait > 0 && _wait < 1000) { DockNative.SetForegroundWindow(_target); _wait = 1000; _settleAt = now; return; }
+                _fade++;
+                double a = 1 - (double)_fade / FadeFrames;
                 if (a <= 0) { Finish(); return; }
-                if (_meshMode) _brush.Opacity = a * a;
-                else PoseThumb(0, (byte)(255 * a * a));
+                if (_meshMode) _flat.Opacity = a;
+                else PoseThumb(0, (byte)(255 * a));
                 return;
             }
 
@@ -307,12 +338,14 @@ namespace MizuEngine
                     Finished?.Invoke(hwnd, true, up);
                     return;
                 }
-                _realDone = true;
-                SetMinimized(hwnd, false);
+                if (_meshMode) ShowFlat();   // последний кадр — точная картинка без сглаживания сетки
+                if (!_cloaked) { _realDone = true; SetMinimized(hwnd, false); }
                 BringToFront(hwnd);
                 Shots.Drop(hwnd);
                 _phase = 2;
                 _settle = 0;
+                _fade = 0;
+                _settleAt = now;
                 _wait = 0;
                 Finished?.Invoke(hwnd, false, up);
                 // Окно снова на экране — запоминаем его невидимые рамки, пригодится при следующем сворачивании кнопкой «_»
@@ -445,6 +478,11 @@ namespace MizuEngine
             _safety.Stop();
             CompositionTarget.Rendering -= OnFrame;
             HideThumb();
+            if (_cloaked && _target != IntPtr.Zero) Cloak(_target, false);   // окно ни в коем случае не должно остаться невидимым
+            _cloaked = false;
+            _flat.Visibility = Visibility.Collapsed;
+            _flat.Source = null;
+            _flat.Opacity = 1;
             _target = IntPtr.Zero;
             _phase = 0;
             if (_active)
@@ -467,6 +505,30 @@ namespace MizuEngine
         static double Lerp(double a, double b, double t) => a + (b - a) * t;
 
         [DllImport("dwmapi.dll")] static extern int DwmFlush();
+        [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int value, int size);
+
+        /// <summary>«Плащ» DWM (DWMWA_CLOAK): окно живёт и рисуется, но его не видно. Для чужих окон Windows может не разрешить — тогда false.</summary>
+        static bool Cloak(IntPtr h, bool on)
+        {
+            if (h == IntPtr.Zero) return false;
+            int v = on ? 1 : 0;
+            try { return DwmSetWindowAttribute(h, 13, ref v, 4) == 0; } catch { return false; }
+        }
+
+        /// <summary>Точная картинка окна поверх сетки: ровно по пикселям экрана.</summary>
+        void ShowFlat()
+        {
+            if (_brush.ImageSource is not BitmapSource img) return;
+            double k = VisualTreeHelper.GetDpi(this).DpiScaleX;
+            if (k <= 0) k = 1;
+            _flat.Source = img;
+            _flat.Margin = new Thickness((_wl - _bx) / k, (_wt - _by) / k, 0, 0);
+            _flat.Width = (_wr - _wl) / k;
+            _flat.Height = (_wb - _wt) / k;
+            _flat.Opacity = 1;
+            _flat.Visibility = Visibility.Visible;
+            _brush.Opacity = 0;
+        }
 
         // ================== системная анимация ==================
 

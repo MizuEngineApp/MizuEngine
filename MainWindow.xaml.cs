@@ -49,7 +49,7 @@ namespace MizuEngine
             InitializeComponent();
             UI.Owner = this;
             Motion.Layer = FlyLayer;
-            _pages = new FrameworkElement[] { PageHome, PageSnow, PageDock, PageWe, PageSoon, PageSettings, PageAbout, PageAuthor,
+            _pages = new FrameworkElement[] { PageHome, PageSnow, PageDock, PageIsland, PageWe, PageSoon, PageSettings, PageAbout, PageAuthor,
                                               PagePresets, PageProfile, PageFriends, PageChats, PageCommunity, PageLeaders, PageCustom, PageAnim, PageUpdates,
                                               PagePlus, PageLive, PageLiveBg, PageMuzule };
             _social = new SocialPages(PageProfile, PageFriends, PageChats, PageCommunity, ShowToast, ApplyPreset, SocialNavigate);
@@ -109,7 +109,7 @@ namespace MizuEngine
             _toastTimer.Tick += (o, e) => HideToast();
             _dockSave.Tick += (o, e) => { _dockSave.Stop(); _s.Save(); };
 
-            foreach (var sv in new[] { PageHome, PageSnow, PageDock, PageSettings, PageAuthor, PageAbout, PageUpdates, WeScroll, NavScroll })
+            foreach (var sv in new[] { PageHome, PageSnow, PageDock, PageIsland, PageSettings, PageAuthor, PageAbout, PageUpdates, WeScroll, NavScroll })
                 SmoothScroll.Attach(sv);
 
             FillThemeTiles(HomeThemes);
@@ -259,6 +259,7 @@ namespace MizuEngine
             FrameworkElement page =
                 n == "NavSnow" ? PageSnow :
                 n == "NavDock" ? PageDock :
+                n == "NavIsland" ? PageIsland :
                 n == "NavWe" ? PageWe :
                 n == "NavWallpapers" ? PageLive :
                 n == "NavLiveBg" ? PageLiveBg :
@@ -364,6 +365,8 @@ namespace MizuEngine
             switch (nav)
             {
                 case "NavPresets": _presets.Show(); break;
+                case "NavIsland": ShowIslandPage(); break;
+                case "NavDock": FillBattList(); break;
                 case "NavProfile": _ = Safe(PageProfile, _social.OnProfileNav); break;
                 case "NavFriends": _ = Safe(PageFriends, _social.OnFriendsNav); break;
                 case "NavChats": _ = Safe(PageChats, _social.ShowChats); break;
@@ -633,6 +636,7 @@ namespace MizuEngine
             IslandHideSwitch.IsChecked = _s.IslandHideIdle;
             IslandFlyUp.IsChecked = _s.IslandFly == "up";
             IslandFlyDown.IsChecked = _s.IslandFly != "up";
+            LoadIslandAndBattery();
             DockSizeSlider.Value = _s.DockSize;
             DockMagSlider.Value = _s.DockMagnify * 100;
             DockGlassSlider.Value = _s.DockTransparency;

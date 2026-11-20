@@ -61,6 +61,8 @@ namespace MizuEngine
             root.Children.Add(Borders());
             root.Children.Add(Header("", UI.Pink, "custom.sounds"));
             root.Children.Add(Sounds());
+            root.Children.Add(Header("\uE71D", UI.Blue, "custom.launch"));
+            root.Children.Add(Launcher());
             root.Children.Add(Header("", UI.Gray, "custom.hotkeys"));
             root.Children.Add(Hotkeys());
             Motion.Stagger(root, 2);
@@ -303,6 +305,32 @@ namespace MizuEngine
 
         // ================== горячие клавиши ==================
 
+        // ================== Launchpad и Spotlight ==================
+
+        FrameworkElement Launcher()
+        {
+            var lp = Switch("lp.on", _s.LaunchpadOn, v => { _s.LaunchpadOn = v; _s.Save(); MizuHotkeys.Reapply(); HotCorner.Apply(); Shell.Run(() => Shell.Dock?.RefreshAll()); });
+            var dock = Switch("lp.dock", _s.LaunchpadDock, v => { _s.LaunchpadDock = v; _s.Save(); Shell.Run(() => Shell.Dock?.RefreshAll()); });
+            var corner = Switch("lp.corner", _s.LaunchpadCorner, v => { _s.LaunchpadCorner = v; _s.Save(); HotCorner.Apply(); });
+            var open = UI.Glass("\uE71D", "lp.open", (s, e) => Launchpad.Toggle(), 8);
+            open.Margin = new Thickness(0, 6, 8, 4);
+            var reset = UI.Glass("\uE72C", "lp.reset", (s, e) =>
+            {
+                _s.LaunchpadLayout = new List<LaunchSlot>();
+                _s.Save();
+                _toast(Loc.T("lp.reset.done"));
+            }, 8);
+            reset.Margin = new Thickness(0, 6, 0, 4);
+
+            var spot = Switch("spot.on", _s.SpotlightOn, v => { _s.SpotlightOn = v; _s.Save(); MizuHotkeys.Reapply(); });
+            var engines = Pills("spotengine", new[] { ("spot.e.google", "google"), ("spot.e.bing", "bing"), ("spot.e.yandex", "yandex"), ("spot.e.baidu", "baidu"), ("spot.e.ddg", "duckduckgo") },
+                                _s.SpotlightEngine, v => { _s.SpotlightEngine = v; _s.Save(); });
+            var tryIt = UI.Glass("\uE721", "spot.open", (s, e) => Spotlight.Toggle(), 8);
+            tryIt.Margin = new Thickness(0, 10, 0, 4);
+            return Card(lp, Hint("lp.on.d"), dock, corner, Hint("lp.corner.d"), UI.Row(open, reset),
+                        UI.Divider(), spot, Hint("spot.on.d"), Label("spot.engine"), engines, tryIt);
+        }
+
         FrameworkElement Hotkeys()
         {
             var on = Switch("hk.on", _s.Hotkeys, v => { _s.Hotkeys = v; _s.Save(); MizuHotkeys.Apply(); });
@@ -312,7 +340,7 @@ namespace MizuEngine
                 var keys = new Border { CornerRadius = new CornerRadius(8), Padding = new Thickness(10, 4, 10, 5), BorderThickness = new Thickness(1) };
                 keys.SetResourceReference(Border.BackgroundProperty, "HoverBg");
                 keys.SetResourceReference(Border.BorderBrushProperty, "CardRim");
-                keys.Child = UI.T("Ctrl + Alt + " + k.key, 12.5, true);
+                keys.Child = UI.T("Ctrl + Alt + " + MizuHotkeys.KeyName(k.key), 12.5, true);
                 rows.Add(UI.IosRow(null, UI.L(k.text, 13.5), keys));
             }
             var panic = new Border { CornerRadius = new CornerRadius(8), Padding = new Thickness(10, 4, 10, 5), BorderThickness = new Thickness(1) };

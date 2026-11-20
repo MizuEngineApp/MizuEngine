@@ -20,6 +20,14 @@ namespace MizuEngine
             if (_w.IsVisible && _w.IsActive) _w.HideSpot();
             else _w.ShowSpot();
         }
+
+        /// <summary>Вопрос из Spotlight (Ctrl+Alt+Space → «Спросить Muzule»): открыть быстрое окно и сразу отправить.</summary>
+        public static void Ask(string text)
+        {
+            if (_w == null) _w = new SpotlightWindow();
+            _w.ShowSpot();
+            _w.AskNow(text);
+        }
     }
 
     internal sealed class SpotlightWindow : Window
@@ -219,6 +227,14 @@ namespace MizuEngine
         }
 
         // ================== отправка и ответ ==================
+
+        public void AskNow(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            _input.Text = text;
+            _input.CaretIndex = _input.Text.Length;
+            Send();
+        }
 
         void Send()
         {

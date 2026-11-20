@@ -16,7 +16,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Иконка exe: её берут Проводник, док, Alt+Tab и заголовки окон -->
     <ApplicationIcon>Assets\MizuEngine.ico</ApplicationIcon>
-    <Version>0.11.3</Version>
+    <Version>0.11.4</Version>
     <!-- Меньше памяти: без фонового сборщика мусора и с режимом экономии памяти -->
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <ServerGarbageCollection>false</ServerGarbageCollection>
@@ -68,6 +68,8 @@
     <!-- Необязательные логотипы для страницы «Автор»: если файлов нет, рисуются встроенные значки -->
     <Resource Include="Assets\tbank.png" Condition="Exists('Assets\tbank.png')" />
     <Resource Include="Assets\donationalerts.png" Condition="Exists('Assets\donationalerts.png')" />
+    <!-- Значки приложений для ссылок в профиле (Telegram, Discord, YouTube, TikTok, Spotify) — скачивает get-brand-icons.bat; нет файла — рисуется круг с буквой -->
+    <Resource Include="Assets\Brands\*.png" />
     <!-- Звуки сообщений из файлов (Social/ChatSounds.cs берёт их по имени snd.<id>.mp3; нет файла — звук синтезируется) -->
     <EmbeddedResource Include="Assets\Sounds\*.mp3" LogicalName="snd.%(Filename).mp3" />
   </ItemGroup>

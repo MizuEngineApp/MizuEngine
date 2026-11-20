@@ -17,7 +17,7 @@ namespace MizuEngine
     /// </summary>
     internal sealed partial class SocialPages
     {
-        static readonly string[] BadgeKinds = { null, "blue", "black", "gray" };
+        static readonly string[] BadgeKinds = { null, "blue", "red", "black", "gray" };
 
         /// <summary>Можно ли мне управлять этим профилем: я админ, а он не владелец (№1) и не другой админ — их трогает только владелец.</summary>
         static bool CanManage(Profile p)
@@ -487,7 +487,7 @@ namespace MizuEngine
             string sub = $"@{p.Handle}  ·  №{p.Number}  ·  {u.Email ?? "—"}";
             string sub2 = string.Format(Loc.T("admin.signed_up"), u.SignedUp.ToLocalTime().ToString("d MMM yyyy", System.Globalization.CultureInfo.CurrentUICulture)) + "  ·  " + seen;
             Button row = null;
-            row = UI.UserRow(p, () => { Motion.Capture(UI.RowAvatar(row), "avatar:" + p.Id); _ = OpenProfile(p); }, sub, UI.Chevron());
+            row = UI.UserRow(p, () => { Motion.Capture(UI.RowAvatar(row), "avatar:" + p.Id); _ = OpenProfile(p); }, sub, VersionPill(u), UI.Chevron());
             // Вторая строка подписи: дата регистрации и «в сети»
             if (row.Content is Grid g && g.Children.Count > 1 && g.Children[1] is StackPanel info)
             {
@@ -497,6 +497,30 @@ namespace MizuEngine
                 info.Children.Add(t);
             }
             return row;
+        }
+
+        /// <summary>
+        /// Плашка с версией MizuEngine, с которой человек заходил последний раз: зелёная — как у меня или новее,
+        /// оранжевая — старее, серая — версия до 0.11.4 (тогда версия ещё не отправлялась).
+        /// </summary>
+        static FrameworkElement VersionPill(AdminUser u)
+        {
+            if (u.LastSeen == default && u.AppVersion == null) return new FrameworkElement();
+            string mine = SocialApi.AppVersion;
+            string text = u.AppVersion == null ? Loc.T("admin.version.old") : "v" + u.AppVersion;
+            Color c = u.AppVersion == null ? Color.FromRgb(0x8E, 0x95, 0xA3)
+                    : Version.TryParse(u.AppVersion, out var a) && Version.TryParse(mine, out var b) && a < b ? Color.FromRgb(0xFF, 0x9F, 0x0A)
+                    : Color.FromRgb(0x34, 0xC7, 0x59);
+            var pill = new Border
+            {
+                CornerRadius = new CornerRadius(8), Padding = new Thickness(8, 2, 8, 3), Margin = new Thickness(0, 0, 8, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Background = new SolidColorBrush(Color.FromArgb(0x2A, c.R, c.G, c.B)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(0x70, c.R, c.G, c.B)), BorderThickness = new Thickness(1),
+                Child = new TextBlock { Text = text, FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(c) },
+                ToolTip = Loc.T("admin.version.tip")
+            };
+            return pill;
         }
 
         void FillAdminGroups(StackPanel list)
