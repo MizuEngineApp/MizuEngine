@@ -18,6 +18,9 @@ namespace MizuEngine
         long _groupOpen;                                  // открытая группа (0 — открыт личный чат или ничего)
         Border _chatPanel;                                // правая часть страницы «Чаты»
         HashSet<string> _friendIds = new HashSet<string>();
+        HashSet<string> _requestIds = new HashSet<string>();
+        /// <summary>Можно ли писать человеку (не другу): ответ сервера, чтобы не спрашивать при каждом открытии чата.</summary>
+        readonly Dictionary<string, (bool ok, string dmFrom)> _dmCache = new Dictionary<string, (bool, string)>();
         readonly Dictionary<string, Profile> _groupPeople = new Dictionary<string, Profile>();
         DateTime _cooldownUntil;                          // медленный режим в группах: следующее сообщение не раньше
         const int SlowModeSeconds = 5;
@@ -133,20 +136,43 @@ namespace MizuEngine
             Motion.Replace(_chatsHost, grid);
 
             list.Children.Add(UI.Loading());
+            _dmCache.Clear();   // кто-то мог подписаться или поменять «Кто может мне писать»
             var friendsTask = SocialApi.Friends(Supa.Me);
             var unreadTask = SocialApi.UnreadCounts();
             var groupsTask = SocialApi.MyGroups();
-            await Task.WhenAll(friendsTask, unreadTask, groupsTask);
+            var requestsTask = SocialApi.DmRequests();
+            await Task.WhenAll(friendsTask, unreadTask, groupsTask, requestsTask);
             var friends = friendsTask.Result;
             var unread = unreadTask.Result;
             var groups = groupsTask.Result;
+            _requestIds = requestsTask.Result ?? Inbox.Requests;
             _friendIds = new HashSet<string>(friends.Select(f => f.Id));
             var others = await SocialApi.OtherChatPartners(_friendIds);
+            var requests = others.Where(p => _requestIds.Contains(p.Id)).ToList();
+            others = others.Where(p => !_requestIds.Contains(p.Id)).ToList();
             list.Children.Clear();
+
+            // «Запросы» (0.11.5): незнакомые, которые написали первыми, — отдельно, пока не примешь или не ответишь
+            if (requests.Count > 0)
+            {
+                var reqTitle = UI.Section("chats.requests", 0);
+                list.Children.Add(reqTitle);
+                var reqHint = UI.L("chats.requests.d", 12, sub: true, wrap: true);
+                reqHint.Margin = new Thickness(4, 0, 0, 6);
+                list.Children.Add(reqHint);
+                foreach (var f in requests)
+                {
+                    var fr = f;
+                    _people[f.Id] = f;
+                    var trailing = new List<UIElement>();
+                    if (unread.TryGetValue(f.Id, out int n)) trailing.Add(UnreadDot(n));
+                    list.Children.Add(UI.UserRow(fr, () => OpenChat(fr), trailing.ToArray()));
+                }
+            }
 
             if (groups.Count > 0)
             {
-                list.Children.Add(UI.Section("groups.title", 0));
+                list.Children.Add(UI.Section("groups.title", requests.Count > 0 ? 14 : 0));
                 _groupRows.Clear();
                 foreach (var g in groups)
                 {
@@ -157,7 +183,7 @@ namespace MizuEngine
                 }
             }
 
-            list.Children.Add(UI.Section("chats.personal", groups.Count > 0 ? 14 : 0));
+            list.Children.Add(UI.Section("chats.personal", groups.Count > 0 || requests.Count > 0 ? 14 : 0));
             if (friends.Count == 0 && others.Count == 0) list.Children.Add(Empty("chats.no_friends"));
             foreach (var f in others.Concat(friends))
             {
@@ -217,12 +243,94 @@ namespace MizuEngine
 
         // ================== личный чат ==================
 
+        /// <summary>Почему нельзя написать: «rainy принимает сообщения только от друзей» и т. п.</summary>
+        static string DmClosedText(Profile p, string dmFrom) => string.Format(Loc.T(dmFrom switch
+        {
+            "friends" => "chats.dm.friends",
+            "followers" => "chats.dm.followers",
+            _ => "chats.dm.closed"
+        }), p.Nickname);
+
+        /// <summary>Вместо поля ввода — серая «заглушка» с замком и причиной (как кнопка «Написать» в профиле).</summary>
+        static FrameworkElement DmClosedNote(Profile p, string dmFrom, bool known, out TextBlock text)
+        {
+            var lockIcon = new TextBlock { Text = "\uE72E", FontFamily = (FontFamily)UI.Owner.FindResource("Icons"), FontSize = 13, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+            lockIcon.SetResourceReference(TextBlock.ForegroundProperty, "SubText");
+            text = UI.T(known ? DmClosedText(p, dmFrom) : "…", 12.5, sub: true, wrap: true);
+            text.VerticalAlignment = VerticalAlignment.Center;
+            var row = new DockPanel();
+            DockPanel.SetDock(lockIcon, Dock.Left);
+            row.Children.Add(lockIcon);
+            row.Children.Add(text);
+            var box = new Border { CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 9, 12, 9), Margin = new Thickness(14, 10, 14, 14), Opacity = 0.75, Child = row, BorderThickness = new Thickness(1) };
+            box.SetResourceReference(Border.BackgroundProperty, "CardBg");
+            box.SetResourceReference(Border.BorderBrushProperty, "CardRim");
+            return box;
+        }
+
+        /// <summary>Внизу чата-запроса: кто это и три кнопки — принять, удалить, заблокировать.</summary>
+        FrameworkElement RequestBar(Profile p)
+        {
+            var sp = new StackPanel { Margin = new Thickness(16, 10, 16, 14) };
+            var text = UI.T(string.Format(Loc.T("chats.request.text"), p.Nickname), 12.5, sub: true, wrap: true);
+            text.Margin = new Thickness(2, 0, 0, 10);
+            sp.Children.Add(text);
+            var row = new WrapPanel();
+            async Task Act(Button b, Func<Task<string>> call, string doneKey)
+            {
+                b.IsEnabled = false;
+                string err = await call();
+                b.IsEnabled = true;
+                if (err != null) { _toast(err); return; }
+                _toast(string.Format(Loc.T(doneKey), p.Nickname));
+                _requestIds.Remove(p.Id);
+                _dmCache.Remove(p.Id);
+                Inbox.RefreshRequests();
+                if (doneKey != "chats.request.accepted") { _chatWith = null; }
+                await ShowChats();
+            }
+            Button accept = null, delete = null, block = null;
+            accept = UI.Primary("chats.request.accept", async (s, e) => await Act(accept, () => SocialApi.DmAccept(p.Id), "chats.request.accepted"));
+            delete = UI.Glass("\uE74D", "chats.request.delete", async (s, e) => await Act(delete, () => SocialApi.DmDeleteRequest(p.Id), "chats.request.deleted"), 9);
+            block = UI.Danger("\uE8F8", "chats.request.block", async (s, e) => await Act(block, () => SocialApi.DmBlock(p.Id, true), "chats.request.blocked"));
+            foreach (var b in new FrameworkElement[] { accept, delete, block })
+            {
+                b.Margin = new Thickness(0, 0, 8, 0);
+                row.Children.Add(b);
+            }
+            sp.Children.Add(row);
+            return sp;
+        }
+
         void OpenChat(Profile friend)
         {
             _chatWith = friend.Id;
             _groupOpen = 0;
             _lastMessageId = 0;
-            bool canWrite = _friendIds.Contains(friend.Id);   // писать можно только друзьям; бот MizuEngine присылает только приглашения
+            // Кому можно писать (0.11.5): друзьям — всегда; остальным — по их настройке «Кто может мне писать» (решает сервер).
+            // Бот MizuEngine присылает только приглашения. Запрос от незнакомого — сначала принять.
+            bool isRequest = _requestIds.Contains(friend.Id);
+            bool known = _friendIds.Contains(friend.Id) || friend.Bot || isRequest || _dmCache.ContainsKey(friend.Id);
+            bool canWrite = !friend.Bot && !isRequest && (_friendIds.Contains(friend.Id) || (_dmCache.TryGetValue(friend.Id, out var dm) && dm.ok));
+            UIElement footer = null;
+            if (isRequest) footer = RequestBar(friend);
+            TextBlock closedText = null;
+            if (!canWrite && !friend.Bot && !isRequest)
+                footer = DmClosedNote(friend, _dmCache.TryGetValue(friend.Id, out var cached) ? cached.dmFrom : null, known, out closedText);
+            if (!known)
+            {
+                // Спрашиваем сервер; писать можно — перерисовываем чат с полем ввода, нельзя — уточняем подсказку
+                string id = friend.Id;
+                _ = CheckDm();
+                async Task CheckDm()
+                {
+                    var st = await SocialApi.DmStatus(id);
+                    _dmCache[id] = (st.ok, st.dmFrom);
+                    if (_chatWith != id || _groupOpen != 0) return;
+                    if (st.ok) OpenChat(friend);
+                    else if (closedText != null) closedText.Text = DmClosedText(friend, st.dmFrom);
+                }
+            }
 
             // ник и галочка — в своём ряду, выровненном по центру аватарки (иначе ник прилипает к верху, а галочка «съезжает» вниз)
             var nameRow = UI.Row(UI.T(friend.Nickname, 15, true));
@@ -255,7 +363,7 @@ namespace MizuEngine
             }
 
             _themeSource = () => SocialApi.GetChatTheme(friend.Id);
-            BuildChatView(head, canWrite, async text => await SocialApi.SendText(friend.Id, text), friend);
+            BuildChatView(head, canWrite, async text => await SocialApi.SendText(friend.Id, text), friend, footer);
             _ = ReloadTheme(true);
         }
 
@@ -332,7 +440,7 @@ namespace MizuEngine
         // ================== общее окно переписки ==================
 
         /// <summary>Шапка, лента сообщений и поле ввода. send возвращает текст ошибки или null. friend — для личного чата (кнопка «Сборка»).</summary>
-        void BuildChatView(FrameworkElement head, bool canWrite, Func<string, Task<string>> send, Profile friend)
+        void BuildChatView(FrameworkElement head, bool canWrite, Func<string, Task<string>> send, Profile friend, UIElement footer = null)
         {
             var dock = new DockPanel();
             head.Margin = new Thickness(18, 14, 18, 12);
@@ -407,6 +515,11 @@ namespace MizuEngine
                 sendBtn.Click += async (s, e) => await DoSend();
                 box.KeyDown += async (s, e) => { if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None) { e.Handled = true; await DoSend(); } };
                 if (_groupOpen > 0 && !IsStaff && DateTime.Now < _cooldownUntil) tick.Start();
+            }
+            else if (!muted && footer != null)
+            {
+                DockPanel.SetDock(footer, Dock.Bottom);
+                dock.Children.Add(footer);
             }
             else
             {

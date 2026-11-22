@@ -38,7 +38,11 @@ namespace MizuEngine
         {
             if (S == null) return;
             if (IsOpen) { _w.Close(true); return; }
-            _w ??= new LaunchpadWindow(S);
+            if (_w == null)
+            {
+                _w = new LaunchpadWindow(S);
+                _w.Closed += (o, e) => _w = null;   // закрыли — окно и все значки уходят из памяти
+            }
             _w.Open();
         }
     }
@@ -140,11 +144,13 @@ namespace MizuEngine
             PreviewMouseWheel += OnWheel;
             _root.MouseLeftButtonUp += OnBackgroundClick;
             Deactivated += (o, e) => { if (_drag == null) Close(false); };
-            AppCatalog.Changed += () => { if (IsVisible) { Sync(); Relayout(false); } };
+            AppCatalog.Changed += OnCatalog;
 
             _dragTimer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(50) };
             _dragTimer.Tick += (o, e) => DragTick();
         }
+
+        void OnCatalog() { if (IsVisible) { Sync(); Relayout(false); } }
 
         // ================== открыть / закрыть ==================
 
@@ -184,9 +190,12 @@ namespace MizuEngine
             void Done()
             {
                 if (!_closing) return;
-                Hide();
-                _bg.Source = null;   // снимок экрана не держим в памяти
-                _closing = false;
+                // Окно закрывается совсем: значки, снимок экрана и прозрачный буфер на весь экран не висят в памяти.
+                // Следующее открытие создаёт его заново (список программ и значки уже в кэше — это быстро).
+                AppCatalog.Changed -= OnCatalog;
+                _bg.Source = null;
+                _dragTimer.Stop();
+                base.Close();
             }
             if (!animate || Motion.Off) { Done(); return; }
             Anim.To(_contentScale, ScaleTransform.ScaleXProperty, 1.06, 170);

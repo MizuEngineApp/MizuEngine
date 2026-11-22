@@ -28,6 +28,8 @@ namespace MizuEngine
         bool _loading = true;
         SocialPages _social;
         PresetsPage _presets;
+        TopBuildsPage _topBuilds;
+        long _pendingShared;      // открыть эту опубликованную сборку при переходе в «Лучшие сборки»
         CustomPage _custom;
         AnimPage _animPage;
         int _navIndex;
@@ -51,11 +53,12 @@ namespace MizuEngine
             Motion.Layer = FlyLayer;
             _pages = new FrameworkElement[] { PageHome, PageSnow, PageDock, PageIsland, PageWe, PageSoon, PageSettings, PageAbout, PageAuthor,
                                               PagePresets, PageProfile, PageFriends, PageChats, PageCommunity, PageLeaders, PageCustom, PageAnim, PageUpdates,
-                                              PagePlus, PageLive, PageLiveBg, PageMuzule };
+                                              PagePlus, PageLive, PageLiveBg, PageMuzule, PageTopBuilds };
             _social = new SocialPages(PageProfile, PageFriends, PageChats, PageCommunity, ShowToast, ApplyPreset, SocialNavigate);
             _social.AttachLeaders(PageLeaders);
             SetupBrand();
-            _presets = new PresetsPage(PagePresets, _s, ShowToast, ReapplyAll, p => _ = SendPresetToFriend(p));
+            _presets = new PresetsPage(PagePresets, _s, ShowToast, ReapplyAll, ApplyBuildEffects, p => _ = SendPresetToFriend(p), OpenSharedBuild);
+            _topBuilds = new TopBuildsPage(PageTopBuilds, _s, ShowToast, ApplyBuildEffects, _social, () => NavPresets.IsChecked = true);
             _custom = new CustomPage(PageCustom, _s, _fx, ShowToast);
             _animPage = new AnimPage(PageAnim, _s);
             _currentPage = PageHome;
@@ -268,6 +271,7 @@ namespace MizuEngine
                 n == "NavAbout" ? PageAbout :
                 n == "NavAuthor" ? PageAuthor :
                 n == "NavPresets" ? PagePresets :
+                n == "NavTopBuilds" ? PageTopBuilds :
                 n == "NavProfile" ? PageProfile :
                 n == "NavFriends" ? PageFriends :
                 n == "NavChats" ? PageChats :
@@ -365,6 +369,7 @@ namespace MizuEngine
             switch (nav)
             {
                 case "NavPresets": _presets.Show(); break;
+                case "NavTopBuilds": if (_pendingShared > 0) { long id = _pendingShared; _pendingShared = 0; _topBuilds.ShowBuild(id); } else _topBuilds.Show(); break;
                 case "NavIsland": ShowIslandPage(); break;
                 case "NavDock": FillBattList(); break;
                 case "NavProfile": _ = Safe(PageProfile, _social.OnProfileNav); break;
@@ -413,11 +418,16 @@ namespace MizuEngine
 
         // ================== сборки ==================
 
+        /// <summary>Сборка из чата (прислал друг): окно «что взять» поверх чатов → резервная копия → применить.</summary>
         void ApplyPreset(PresetInfo p)
         {
-            Presets.Apply(p, _s);
-            ReapplyAll();
-            ShowToast(Loc.T("presets.applied"));
+            BuildUi.ApplyDialog(PageChats, p.Name, p.Summary, async parts =>
+            {
+                await System.Threading.Tasks.Task.Run(() => Presets.Backup(_s));
+                Presets.Apply(p, _s, parts);
+                ApplyBuildEffects();
+                ShowToast(Loc.T("presets.applied"));
+            });
         }
 
         /// <summary>После сборки или своей темы: заново применяем тему, эффекты и док, обновляем переключатели.</summary>

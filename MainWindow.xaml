@@ -486,6 +486,8 @@
                                 <RadioButton x:Name="NavWallpapers" Style="{StaticResource NavItem}" Tag="&#xE771;" Content="{DynamicResource nav.wallpapers}" Checked="Nav_Checked"/>
                                 <RadioButton x:Name="NavLiveBg" Style="{StaticResource NavItem}" Tag="&#xE7F4;" Content="{DynamicResource nav.livebg}" Checked="Nav_Checked"/>
                                 <RadioButton x:Name="NavPresets" Style="{StaticResource NavItem}" Tag="&#xE8F1;" Content="{DynamicResource nav.presets}" Checked="Nav_Checked"/>
+                                <!-- 0.11.5: лучшие сборки людей (лайки, топ дня/недели/месяца) — сразу под «Сборками» -->
+                                <RadioButton x:Name="NavTopBuilds" Style="{StaticResource NavItem}" Tag="&#xE735;" Content="{DynamicResource nav.topbuilds}" Checked="Nav_Checked"/>
                                 <RadioButton x:Name="NavCustom" Style="{StaticResource NavItem}" Tag="&#xE790;" Content="{DynamicResource nav.custom}" Checked="Nav_Checked"/>
                                 <RadioButton x:Name="NavAnim" Style="{StaticResource NavItem}" Tag="&#xE945;" Content="{DynamicResource nav.anim}" Checked="Nav_Checked"/>
                                 <Border Height="1" Background="{DynamicResource Divider}" Margin="10,8"/>
@@ -910,6 +912,7 @@
 
                         <!-- Сборки, профиль, друзья, чаты — содержимое строится в коде -->
                         <Grid x:Name="PagePresets" Visibility="Collapsed"/>
+                        <Grid x:Name="PageTopBuilds" Visibility="Collapsed"/>
                         <Grid x:Name="PageProfile" Visibility="Collapsed"/>
                         <Grid x:Name="PageFriends" Visibility="Collapsed"/>
                         <Grid x:Name="PageChats" Visibility="Collapsed"/>

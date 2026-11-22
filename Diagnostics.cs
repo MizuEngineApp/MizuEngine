@@ -12,7 +12,16 @@ namespace MizuEngine
     /// </summary>
     internal static class Diagnostics
     {
-        public static void DumpWindows(string when)
+        /// <summary>
+        /// Пишет список окон в фоне. Раньше это делалось в главном потоке через GetWindowText — а он для своих окон
+        /// шлёт сообщение потоку-хозяину и ждёт ответа без ограничения времени. Если поток-хозяин в этот момент
+        /// занят (значки дока, список программ), окно MizuEngine «не отвечало» до минуты. Теперь — InternalGetWindowText
+        /// (ничего не шлёт и не ждёт) и в фоновом потоке.
+        /// </summary>
+        public static void DumpWindows(string when) =>
+            System.Threading.ThreadPool.QueueUserWorkItem(_ => DumpWindowsNow(when));
+
+        static void DumpWindowsNow(string when)
         {
             try
             {
@@ -25,7 +34,7 @@ namespace MizuEngine
                     DockNative.GetWindowThreadProcessId(h, out uint pid);
                     if (pid != own) return true;
                     var title = new StringBuilder(256);
-                    DockNative.GetWindowText(h, title, title.Capacity);
+                    DockNative.InternalGetWindowText(h, title, title.Capacity);
                     cls.Clear();
                     Native.GetClassName(h, cls, cls.Capacity);
                     Native.GetWindowRect(h, out var r);
@@ -35,7 +44,10 @@ namespace MizuEngine
                     return true;
                 }, IntPtr.Zero);
                 Directory.CreateDirectory(Settings.Folder);
-                File.AppendAllText(Path.Combine(Settings.Folder, "windows.log"), sb.ToString() + "\n");
+                string file = Path.Combine(Settings.Folder, "windows.log");
+                // Журнал не растёт бесконечно (было 800 КБ): больше 256 КБ — начинаем заново
+                try { if (new FileInfo(file).Length > 256 * 1024) File.Delete(file); } catch { }
+                File.AppendAllText(file, sb.ToString() + "\n");
             }
             catch (Exception e) { Settings.Log(e); }
         }

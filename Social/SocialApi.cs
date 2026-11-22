@@ -26,6 +26,9 @@ namespace MizuEngine
         // С 0.11.4: ссылки (как подключения в Discord), кто видит «Сейчас слушает», оформление Mizu Plus
         public List<ProfileLink> Links = new List<ProfileLink>();
         public string NpVis = "everyone";       // everyone / friends / nobody
+        // С 0.11.5: кто может писать в личку и куда попадают сообщения от незнакомых
+        public string DmFrom = "followers";     // everyone / followers (подписчики и друзья) / friends
+        public string DmStrangers = "requests"; // requests (в «Запросы») / chats (сразу в чаты)
         public string BannerFx, BannerAnim, AvatarFrame, AvatarAnim;
 
         /// <summary>Подписчик Mizu Plus — у ника значок Plus.</summary>
@@ -69,6 +72,8 @@ namespace MizuEngine
                 GroupAdd = (string)j["group_add"] ?? "everyone",
                 Links = ProfileLinks.Parse(j["links"]),
                 NpVis = (string)j["np_vis"] ?? "everyone",
+                DmFrom = (string)j["dm_from"] ?? "followers",
+                DmStrangers = (string)j["dm_strangers"] ?? "requests",
                 BannerFx = (string)j["banner_fx"],
                 BannerAnim = (string)j["banner_anim"],
                 AvatarFrame = (string)j["avatar_frame"],
@@ -183,6 +188,9 @@ namespace MizuEngine
     internal sealed class Comment
     {
         public long Id;
+        public long? ReplyTo;                // 0.11.5: ответ на комментарий (id), null — обычный комментарий
+        public int Likes;                    // 0.11.5: лайки комментария
+        public bool Liked;
         public string Body;
         public Profile Author;
         public DateTime Created;
@@ -445,7 +453,7 @@ namespace MizuEngine
             string.Format(Loc.T("posts.need_hours"), PostHours, HoursMinutes(usageSeconds));
 
         /// <summary>«1 ч 20 мин» / «45 мин».</summary>
-        static string HoursMinutes(long seconds)
+        internal static string HoursMinutes(long seconds)
         {
             long m = Math.Max(0, seconds) / 60;
             return m >= 60 ? string.Format(Loc.T("posts.h_m"), m / 60, m % 60) : string.Format(Loc.T("posts.m"), m);
@@ -499,23 +507,59 @@ namespace MizuEngine
 
         // ---------- комментарии ----------
 
-        public static async Task<List<Comment>> GetComments(long postId)
+        // Комментарии есть под постами (post_comments) и под сборками (build_comments, с 0.11.5). kind: "post" / "build".
+        static string CommentTable(string kind) => kind == "build" ? "build_comments" : "post_comments";
+        static string CommentOwner(string kind) => kind == "build" ? "build_id" : "post_id";
+
+        static string CommentLikes(string kind) => kind == "build" ? "build_comment_likes" : "post_comment_likes";
+
+        /// <summary>Комментарии с ответами и лайками. null — нет связи. Старый сервер (без v10.sql) — без ответов и лайков.</summary>
+        public static async Task<List<Comment>> GetComments(string kind, long id)
         {
-            var rows = await Supa.Select($"post_comments?post_id=eq.{postId}&select=id,body,created_at,p:author(*)&order=id.asc&limit=200");
-            return rows?.Select(r => new Comment
+            string t = CommentTable(kind), k = CommentOwner(kind), l = CommentLikes(kind);
+            var rows = await Supa.Select($"{t}?{k}=eq.{id}&select=id,body,created_at,reply_to,p:author(*),lk:{l}(count)&order=id.asc&limit=300");
+            bool withLikes = rows != null;
+            if (rows == null && kind == "post")
+                rows = await Supa.Select($"{t}?{k}=eq.{id}&select=id,body,created_at,p:author(*)&order=id.asc&limit=300");
+            var list = rows?.Select(r => new Comment
             {
                 Id = (long?)r["id"] ?? 0,
+                ReplyTo = (long?)r["reply_to"],
+                Likes = CountOf(r["lk"]),
                 Body = (string)r["body"] ?? "",
                 Author = Profile.From(r["p"]),
                 Created = DateTime.TryParse((string)r["created_at"], out var d) ? d.ToLocalTime() : DateTime.Now
-            }).Where(c => c.Author != null).ToList() ?? new List<Comment>();
+            }).Where(c => c.Author != null).ToList();
+            if (list != null && withLikes && Supa.SignedIn && list.Count > 0)
+            {
+                string ids = string.Join(",", list.Select(x => x.Id));
+                var mine = await Supa.Select($"{l}?user_id=eq.{Supa.Q(Supa.Me)}&comment_id=in.({ids})&select=comment_id");
+                var liked = new HashSet<long>(mine?.Select(m => (long?)m["comment_id"] ?? 0) ?? Enumerable.Empty<long>());
+                foreach (var x in list) x.Liked = liked.Contains(x.Id);
+            }
+            return list;
         }
 
-        public static async Task<string> AddComment(long postId, string body) =>
-            MapError(await Supa.Insert("post_comments", new JsonObject { ["post_id"] = postId, ["body"] = body }));
+        public static async Task<string> LikeComment(string kind, long commentId, bool on) =>
+            MapError(on ? await Supa.Insert(CommentLikes(kind), new JsonObject { ["comment_id"] = commentId, ["user_id"] = Supa.Me })
+                        : await Supa.Delete(CommentLikes(kind), $"comment_id=eq.{commentId}&user_id=eq.{Supa.Q(Supa.Me)}"));
 
-        public static async Task<string> DeleteComment(long id) =>
-            MapError(await Supa.Delete("post_comments", $"id=eq.{id}"));
+        public static async Task<string> AddComment(string kind, long id, string body, long? replyTo = null)
+        {
+            var row = new JsonObject { [CommentOwner(kind)] = id, ["body"] = body };
+            if (replyTo.HasValue) row["reply_to"] = replyTo.Value;
+            string err = await Supa.Insert(CommentTable(kind), row);
+            // Сервер без v10.sql не знает reply_to — отправляем просто комментарием
+            if (err != null && replyTo.HasValue && err.Contains("reply_to"))
+            {
+                row.Remove("reply_to");
+                err = await Supa.Insert(CommentTable(kind), row);
+            }
+            return MapError(err);
+        }
+
+        public static async Task<string> DeleteComment(string kind, long commentId) =>
+            MapError(await Supa.Delete(CommentTable(kind), $"id=eq.{commentId}"));
 
         // ---------- сообщество ----------
 
@@ -734,9 +778,15 @@ namespace MizuEngine
         /// <summary>Кто писал мне в личку, но не в друзьях (например, бот MizuEngine с приглашениями).</summary>
         public static async Task<List<Profile>> OtherChatPartners(ICollection<string> exclude)
         {
-            var rows = await Supa.Select($"messages?receiver=eq.{Supa.Q(Supa.Me)}&select=sender&order=id.desc&limit=300");
-            if (rows == null) return new List<Profile>();
-            var ids = rows.Select(r => (string)r["sender"]).Where(id => id != null && id != Supa.Me && !exclude.Contains(id)).Distinct().Take(30).ToList();
+            // Те, кто писал мне, и те, кому писал я (с 0.11.5 писать можно не только друзьям)
+            var inTask = Supa.Select($"messages?receiver=eq.{Supa.Q(Supa.Me)}&select=id,sender&order=id.desc&limit=300");
+            var outTask = Supa.Select($"messages?sender=eq.{Supa.Q(Supa.Me)}&select=id,receiver&order=id.desc&limit=300");
+            await Task.WhenAll(inTask, outTask);
+            var rows = new List<(long id, string who)>();
+            foreach (var r in inTask.Result ?? new JsonArray()) rows.Add(((long?)r["id"] ?? 0, (string)r["sender"]));
+            foreach (var r in outTask.Result ?? new JsonArray()) rows.Add(((long?)r["id"] ?? 0, (string)r["receiver"]));
+            if (rows.Count == 0) return new List<Profile>();
+            var ids = rows.OrderByDescending(r => r.id).Select(r => r.who).Where(id => id != null && id != Supa.Me && !exclude.Contains(id)).Distinct().Take(40).ToList();
             if (ids.Count == 0) return new List<Profile>();
             var ps = await Supa.Select($"profiles?id=in.({string.Join(",", ids.Select(Supa.Q))})&select=*");
             return ps?.Select(Profile.From).Where(p => p != null).ToList() ?? new List<Profile>();
@@ -919,13 +969,54 @@ namespace MizuEngine
         public static Task<string> MarkRead(string friendId) =>
             Supa.Update("messages", $"sender=eq.{Supa.Q(friendId)}&receiver=eq.{Supa.Q(Supa.Me)}&read=eq.false", new JsonObject { ["read"] = true });
 
+        // ---------- кто может писать, запросы, блокировки (0.11.5) ----------
+
+        /// <summary>Можно ли мне написать этому человеку. dmFrom — его настройка (для подсказки), blocked — я его заблокировал.</summary>
+        public static async Task<(bool ok, string dmFrom, bool blocked)> DmStatus(string id)
+        {
+            var (json, err) = await Supa.Call("dm_status", new JsonObject { ["p_to"] = id });
+            if (err != null || json is not JsonObject o) return (false, null, false);
+            return ((bool?)o["ok"] ?? false, (string)o["dm_from"], (bool?)o["blocked_by_me"] ?? false);
+        }
+
+        /// <summary>Кто из написавших мне сейчас в «Запросах». null — нет сети (или база ещё без v09.sql).</summary>
+        public static async Task<HashSet<string>> DmRequests()
+        {
+            var (json, err) = await Supa.Call("dm_requests", new JsonObject());
+            if (err != null || json is not JsonArray a) return null;
+            var set = new HashSet<string>();
+            foreach (var x in a)
+            {
+                string id = x is JsonObject jo ? (string)jo["dm_requests"] : (string)x;
+                if (!string.IsNullOrEmpty(id)) set.Add(id);
+            }
+            return set;
+        }
+
+        public static async Task<string> DmAccept(string id) =>
+            MapError((await Supa.Call("dm_accept", new JsonObject { ["p_peer"] = id })).error);
+
+        public static async Task<string> DmDeleteRequest(string id) =>
+            MapError((await Supa.Call("dm_request_delete", new JsonObject { ["p_peer"] = id })).error);
+
+        public static async Task<string> DmBlock(string id, bool on) =>
+            MapError((await Supa.Call("dm_block", new JsonObject { ["p_peer"] = id, ["p_on"] = on })).error);
+
+        /// <summary>Кого я заблокировал.</summary>
+        public static async Task<List<Profile>> DmBlocked()
+        {
+            var rows = await Supa.Select($"dm_blocks?owner=eq.{Supa.Q(Supa.Me)}&select=p:peer(*)&order=created_at.desc&limit=200");
+            return rows?.Select(r => Profile.From(r["p"])).Where(p => p != null).ToList() ?? new List<Profile>();
+        }
+
         public static async Task<string> SendText(string friendId, string text) =>
             MapError(await Supa.Insert("messages", new JsonObject { ["receiver"] = friendId, ["kind"] = "text", ["body"] = text }));
 
         public static async Task<string> SendPreset(string friendId, PresetInfo preset)
         {
-            string file = Presets.Export(preset, Path.Combine(Path.GetTempPath(), $"mizuengine-{Guid.NewGuid():N}.mizupreset"));
-            if (file == null) return "preset";
+            // 0.11.5: сборка может быть с видео — упаковываем так же, как для «Лучших сборок» (до 50 МБ, видео сжимается)
+            var (file, packErr) = await BuildFiles.PackForUpload(preset, null);
+            if (file == null) return packErr ?? "preset";
             string url = await Supa.Upload($"{Supa.Me}/presets/{Guid.NewGuid():N}.mizupreset", File.ReadAllBytes(file), "application/octet-stream");
             try { File.Delete(file); } catch { }
             if (url == null) return Loc.T("err.upload");
@@ -964,10 +1055,28 @@ namespace MizuEngine
                 return string.Format(Loc.T("err.post_cooldown"), Math.Max(1, (sec + 59) / 60));
             }
             if (e.Contains("post_text_only")) return Loc.T("err.post_text_only");
+            // 0.11.5: публикация сборок (guard_build в v10.sql)
+            if (e.Contains("build_hours")) return BuildsApi.NotEnoughHoursText(NumberAfter(e, "build_hours:"));
+            if (e.Contains("build_cooldown"))
+            {
+                long sec = NumberAfter(e, "build_cooldown:");
+                return string.Format(Loc.T("err.build_cooldown"), Math.Max(1, (sec + 59) / 60));
+            }
+            if (e.Contains("build_too_big")) return Loc.T("builds.too_big");
+            if (e.Contains("build_name")) return Loc.T("builds.need_name");
+            if (e.Contains("build_file") || e.Contains("build_cover")) return Loc.T("err.upload");
+            if ((e.Contains("could not find") || e.Contains("does not exist") || e.Contains("schema cache") || e.Contains("bucket not found")) &&
+                (e.Contains("build") || e.Contains("reply_to") || e.Contains("comment_likes")))
+                return Loc.T("err.server_old");
             if (e.Contains("post_too_long")) return string.Format(Loc.T("err.post_too_long"), PostMaxLen);
             if (e.Contains("post_empty")) return Loc.T("err.post_empty");
             if (e.Contains("post_reports") && (e.Contains("duplicate") || e.Contains("unique"))) return Loc.T("posts.report_already");
             if (e.Contains("row-level security") && e.Contains("post_reports")) return Loc.T("err.report_own");
+            // 0.11.5: человек ограничил, кто может ему писать (или заблокировал)
+            if (e.Contains("row-level security") && e.Contains("\"messages\"")) return Loc.T("err.dm_closed");
+            if ((e.Contains("could not find") || e.Contains("does not exist") || e.Contains("schema cache")) &&
+                (e.Contains("dm_from") || e.Contains("dm_strangers") || e.Contains("dm_block") || e.Contains("dm_status") || e.Contains("dm_accept")))
+                return Loc.T("err.server_old");
             // 0.11.4: ссылки и оформление профиля (v08.sql)
             if (e.Contains("links_limit")) return string.Format(Loc.T("err.links_limit"), Math.Max(1, NumberAfter(e, "links_limit:")));
             if (e.Contains("link_bad")) return Loc.T("err.link_bad");

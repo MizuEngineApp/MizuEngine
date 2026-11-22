@@ -117,8 +117,9 @@ namespace MizuEngine
                     main.Closed += (s, e) =>
                     {
                         main = null;
-                        Dispatcher.CurrentDispatcher.BeginInvoke(new Action(Glass.TrimMemory), DispatcherPriority.ApplicationIdle);
+                        MemoryKeeper.Soon(true);   // окно ушло в трей — отдаём память (как Discord/Telegram)
                     };
+                    main.StateChanged += (s, e) => { if (main?.WindowState == WindowState.Minimized) MemoryKeeper.Soon(false); };
                 }
                 main.Show();
                 if (main.WindowState == WindowState.Minimized) main.WindowState = WindowState.Normal;
@@ -222,8 +223,9 @@ namespace MizuEngine
                 t.Start();
             }
 
+            // Память: в фоне программа отдаёт Windows всё, что сейчас не нужно; раз в минуту цифры — в mem.log
+            MemoryKeeper.Start(() => main);
             if (Array.IndexOf(args, "--tray") < 0) Open();   // при автозапуске стартуем свёрнутыми в трей
-            else app.Dispatcher.BeginInvoke(new Action(Glass.TrimMemory), DispatcherPriority.ApplicationIdle);
             app.Run();
         }
     }

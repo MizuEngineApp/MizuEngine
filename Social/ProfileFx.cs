@@ -21,29 +21,35 @@ namespace MizuEngine
         // ================== общий таймер ==================
 
         static readonly List<FxElement> Live = new List<FxElement>();
-        static TimeSpan _last;
-        static bool _hooked;
+        static System.Windows.Threading.DispatcherTimer _timer;
+        static DateTime _last;
 
+        // Обычный таймер ~30 к/с, а не CompositionTarget.Rendering: тот заставляет WPF перерисовывать окно
+        // без остановки (60+ к/с) и держит процессор и память занятыми, даже когда анимаций не видно.
         internal static void Add(FxElement e)
         {
             if (!Live.Contains(e)) Live.Add(e);
-            if (!_hooked) { CompositionTarget.Rendering += OnFrame; _hooked = true; }
+            if (_timer == null)
+            {
+                _timer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
+                _timer.Tick += OnFrame;
+            }
+            if (!_timer.IsEnabled) { _last = DateTime.UtcNow; _timer.Start(); }
         }
 
         internal static void Remove(FxElement e)
         {
             Live.Remove(e);
-            if (Live.Count == 0 && _hooked) { CompositionTarget.Rendering -= OnFrame; _hooked = false; }
+            if (Live.Count == 0) _timer?.Stop();
         }
 
         static void OnFrame(object sender, EventArgs e)
         {
-            var t = ((RenderingEventArgs)e).RenderingTime;
-            if ((t - _last).TotalMilliseconds < 31) return;   // ~30 к/с хватает, а нагрузки вдвое меньше
-            double dt = Math.Min(0.1, (t - _last).TotalSeconds);
-            _last = t;
+            var now = DateTime.UtcNow;
+            double dt = Math.Clamp((now - _last).TotalSeconds, 0.001, 0.1);
+            _last = now;
             foreach (var x in Live.ToArray())
-                if (x.IsVisible) x.Tick(dt);
+                if (x.IsVisible && !x.Paused) x.Tick(dt);
         }
 
         internal static Color Hsl(double h, double s, double l, byte a = 255)
@@ -107,13 +113,16 @@ namespace MizuEngine
     /// <summary>Основа: подписывается на общий таймер, только пока на экране.</summary>
     internal abstract class FxElement : FrameworkElement
     {
-        protected double T;
+        protected double T = 1.3;
         protected readonly Random R = new Random();
+
+        /// <summary>Стоит на месте (превью в «Оформлении» оживают только под мышью — так не тратится процессор).</summary>
+        public bool Paused;
 
         protected FxElement()
         {
             IsHitTestVisible = false;
-            Loaded += (s, e) => ProfileFx.Add(this);
+            Loaded += (s, e) => { ProfileFx.Add(this); Tick(0.001); };   // первый кадр сразу, даже на паузе
             Unloaded += (s, e) => ProfileFx.Remove(this);
         }
 
@@ -404,36 +413,69 @@ namespace MizuEngine
 
         Point On(double angle, double r) => new Point(C + Math.Cos(angle) * r, C + Math.Sin(angle) * r);
 
-        /// <summary>Кольцо из коротких дуг разного цвета (как «конический» градиент).</summary>
-        void Ring(DrawingContext dc, double r, double thick, Func<double, Color> color, int n = 72)
+        static readonly Dictionary<string, Drawing> RingCache = new Dictionary<string, Drawing>();
+        static readonly Dictionary<string, Brush> GlowCache = new Dictionary<string, Brush>();
+
+        /// <summary>
+        /// Кольцо из коротких дуг разного цвета (как «конический» градиент). Рисуется ОДИН раз и кэшируется,
+        /// а движение — это поворот готовой картинки на spin радиан в секунду (раньше каждый кадр создавались
+        /// сотни новых кистей и фигур — отсюда подвисания и рост памяти).
+        /// </summary>
+        void Ring(DrawingContext dc, double r, double thick, Func<double, Color> color, double spin, int n = 72)
         {
-            for (int i = 0; i < n; i++)
+            string key = _kind + "|" + r.ToString("0.#") + "|" + thick;
+            if (!RingCache.TryGetValue(key, out var ring))
             {
-                double a0 = i * Math.PI * 2 / n, a1 = (i + 1.15) * Math.PI * 2 / n;
-                var pen = new Pen(new SolidColorBrush(color(a0)), thick) { StartLineCap = PenLineCap.Flat, EndLineCap = PenLineCap.Flat };
-                var g = new StreamGeometry();
-                using (var c = g.Open())
+                var group = new DrawingGroup();
+                using (var gc = group.Open())
                 {
-                    c.BeginFigure(On(a0, r), false, false);
-                    c.ArcTo(On(a1, r), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
+                    for (int i = 0; i < n; i++)
+                    {
+                        double a0 = i * Math.PI * 2 / n, a1 = (i + 1.15) * Math.PI * 2 / n;
+                        var brush = new SolidColorBrush(color(a0));
+                        brush.Freeze();
+                        var pen = new Pen(brush, thick) { StartLineCap = PenLineCap.Flat, EndLineCap = PenLineCap.Flat };
+                        pen.Freeze();
+                        var g = new StreamGeometry();
+                        using (var c = g.Open())
+                        {
+                            c.BeginFigure(new Point(Math.Cos(a0) * r, Math.Sin(a0) * r), false, false);
+                            c.ArcTo(new Point(Math.Cos(a1) * r, Math.Sin(a1) * r), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
+                        }
+                        g.Freeze();
+                        gc.DrawGeometry(null, pen, g);
+                    }
                 }
-                g.Freeze();
-                dc.DrawGeometry(null, pen, g);
+                group.Freeze();
+                RingCache[key] = ring = group;
             }
+            dc.PushTransform(new TranslateTransform(C, C));
+            dc.PushTransform(new RotateTransform(spin * T * 180 / Math.PI));
+            dc.DrawDrawing(ring);
+            dc.Pop();
+            dc.Pop();
         }
 
         void Glow(DrawingContext dc, Color c, double alpha, double width)
         {
-            var b = new RadialGradientBrush
+            string key = _kind + "|" + Rr.ToString("0.#") + "|" + width;
+            if (!GlowCache.TryGetValue(key, out var b))
             {
-                GradientStops =
+                b = new RadialGradientBrush
                 {
-                    new GradientStop(Color.FromArgb(0, c.R, c.G, c.B), (Rr - width) / (Rr + width)),
-                    new GradientStop(Color.FromArgb((byte)(255 * alpha), c.R, c.G, c.B), Rr / (Rr + width)),
-                    new GradientStop(Color.FromArgb(0, c.R, c.G, c.B), 1)
-                }
-            };
+                    GradientStops =
+                    {
+                        new GradientStop(Color.FromArgb(0, c.R, c.G, c.B), (Rr - width) / (Rr + width)),
+                        new GradientStop(Color.FromArgb(255, c.R, c.G, c.B), Rr / (Rr + width)),
+                        new GradientStop(Color.FromArgb(0, c.R, c.G, c.B), 1)
+                    }
+                };
+                b.Freeze();
+                GlowCache[key] = b;
+            }
+            dc.PushOpacity(Math.Clamp(alpha, 0, 1));
             dc.DrawEllipse(b, null, new Point(C, C), Rr + width, Rr + width);
+            dc.Pop();
         }
 
         protected override void OnRender(DrawingContext dc)
@@ -444,19 +486,19 @@ namespace MizuEngine
                 case "neon":
                 {
                     Glow(dc, Color.FromRgb(0xB4, 0x4C, 0xFF), 0.45 + 0.15 * Math.Sin(T * 2.5), 11);
-                    Ring(dc, r, 4, a => { double k = (Math.Sin(a + T * 2.2) + 1) / 2; return UI.Mix(Color.FromRgb(0xFF, 0x2D, 0xD1), Color.FromRgb(0x00, 0xE5, 0xFF), k); });
+                    Ring(dc, r, 4, a => { double k = (Math.Sin(a) + 1) / 2; return UI.Mix(Color.FromRgb(0xFF, 0x2D, 0xD1), Color.FromRgb(0x00, 0xE5, 0xFF), k); }, -2.2);
                     break;
                 }
                 case "rainbow":
-                    Glow(dc, ProfileFx.Hsl(T * 60, 0.9, 0.6), 0.35, 9);
-                    Ring(dc, r, 4.5, a => ProfileFx.Hsl(a * 180 / Math.PI + T * 120, 0.95, 0.6));
+                    Glow(dc, Color.FromRgb(0xB0, 0x7C, 0xFF), 0.3 + 0.08 * Math.Sin(T * 2), 9);
+                    Ring(dc, r, 4.5, a => ProfileFx.Hsl(a * 180 / Math.PI, 0.95, 0.6), -2.1);
                     break;
                 case "gold":
                     Ring(dc, r, 5, a =>
                     {
-                        double shine = Math.Pow(Math.Max(0, Math.Cos(a - T * 1.6)), 14);
+                        double shine = Math.Pow(Math.Max(0, Math.Cos(a)), 14);
                         return UI.Mix(UI.Mix(Color.FromRgb(0xB8, 0x86, 0x1B), Color.FromRgb(0xF6, 0xD3, 0x65), (Math.Sin(a * 3) + 1) / 2), Colors.White, shine * 0.85);
-                    });
+                    }, 1.6);
                     for (int i = 0; i < 3; i++)
                     {
                         double a = T * 0.7 + i * 2.1;
@@ -470,9 +512,9 @@ namespace MizuEngine
                     Glow(dc, Color.FromRgb(0x9A, 0xE6, 0xFF), 0.35, 9);
                     Ring(dc, r, 4.5, a =>
                     {
-                        double shine = Math.Pow(Math.Max(0, Math.Cos(a + T * 1.2)), 10);
+                        double shine = Math.Pow(Math.Max(0, Math.Cos(a)), 10);
                         return UI.Mix(UI.Mix(Color.FromRgb(0x7F, 0xCF, 0xFF), Color.FromRgb(0xE4, 0xF7, 0xFF), (Math.Sin(a * 4) + 1) / 2), Colors.White, shine);
-                    });
+                    }, -1.2);
                     foreach (var p in _p)
                     {
                         var pt = On(p.Ph + T * 0.25, r + 3);
@@ -483,7 +525,7 @@ namespace MizuEngine
                     break;
                 case "fire":
                     Glow(dc, Color.FromRgb(0xFF, 0x6A, 0x10), 0.45 + 0.1 * Math.Sin(T * 7), 12);
-                    Ring(dc, r, 4, a => UI.Mix(Color.FromRgb(0xFF, 0x3D, 0x0A), Color.FromRgb(0xFF, 0xC4, 0x2E), (Math.Sin(a * 6 + T * 5) + 1) / 2));
+                    Ring(dc, r, 4, a => UI.Mix(Color.FromRgb(0xFF, 0x3D, 0x0A), Color.FromRgb(0xFF, 0xC4, 0x2E), (Math.Sin(a * 6) + 1) / 2), -0.9);
                     foreach (var p in _p)
                     {
                         double k = p.Life / p.Max;
@@ -497,7 +539,7 @@ namespace MizuEngine
                     }
                     break;
                 case "snow":
-                    Ring(dc, r, 3.5, a => UI.Mix(Color.FromRgb(0xDF, 0xF1, 0xFF), Colors.White, (Math.Sin(a * 5 + T) + 1) / 2));
+                    Ring(dc, r, 3.5, a => UI.Mix(Color.FromRgb(0xDF, 0xF1, 0xFF), Colors.White, (Math.Sin(a * 5) + 1) / 2), -0.2);
                     foreach (var p in _p)
                     {
                         double a = p.Ph + T * p.Vy * 0.6;
@@ -506,7 +548,7 @@ namespace MizuEngine
                     }
                     break;
                 case "sakura":
-                    Ring(dc, r, 3.5, a => UI.Mix(Color.FromRgb(0xFF, 0x9E, 0xC4), Color.FromRgb(0xFF, 0xE0, 0xEC), (Math.Sin(a * 3 - T) + 1) / 2));
+                    Ring(dc, r, 3.5, a => UI.Mix(Color.FromRgb(0xFF, 0x9E, 0xC4), Color.FromRgb(0xFF, 0xE0, 0xEC), (Math.Sin(a * 3) + 1) / 2), 0.33);
                     foreach (var p in _p)
                     {
                         double a = p.Ph + T * 0.45;
@@ -515,7 +557,7 @@ namespace MizuEngine
                     }
                     break;
                 case "stars":
-                    Ring(dc, r, 2.5, a => UI.Mix(Color.FromRgb(0x6C, 0x5C, 0xE8), Color.FromRgb(0xF6, 0xD3, 0x65), (Math.Sin(a * 2 + T) + 1) / 2));
+                    Ring(dc, r, 2.5, a => UI.Mix(Color.FromRgb(0x6C, 0x5C, 0xE8), Color.FromRgb(0xF6, 0xD3, 0x65), (Math.Sin(a * 2) + 1) / 2), -0.5);
                     foreach (var p in _p)
                     {
                         double k = p.Life / (p.Max * 2);

@@ -265,11 +265,19 @@ namespace MizuEngine
         {
             try
             {
-                Directory.CreateDirectory(Folder);
-                File.AppendAllText(Path.Combine(Folder, "error.log"), $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {ex}\n\n");
+                lock (LogLock)   // пишут сразу несколько потоков — по очереди, иначе записи теряются
+                {
+                    Directory.CreateDirectory(Folder);
+                    string file = Path.Combine(Folder, "error.log");
+                    // Журнал не растёт бесконечно: больше 1 МБ — старый уходит в error.old.log
+                    try { if (new FileInfo(file).Length > 1024 * 1024) File.Move(file, Path.Combine(Folder, "error.old.log"), true); } catch { }
+                    File.AppendAllText(file, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {ex}\n\n");
+                }
             }
             catch { }
         }
+
+        static readonly object LogLock = new object();
     }
 
     /// <summary>Место в Launchpad: программа (App) или папка (Folder + Apps).</summary>

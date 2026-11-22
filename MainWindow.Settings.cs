@@ -182,6 +182,39 @@ namespace MizuEngine
             ShowToast(Loc.T("set.data.cleared"));
         }
 
+        /// <summary>«Заблокированные» в «Конфиденциальности»: кого я заблокировал в личных сообщениях.</summary>
+        async System.Threading.Tasks.Task FillBlocked(StackPanel box)
+        {
+            var list = await SocialApi.DmBlocked();
+            box.Children.Clear();
+            if (list.Count == 0) return;
+            var title = UI.T(string.Format(Loc.T("set.acc.blocked"), list.Count), 13.5);
+            title.Margin = new Thickness(0, 6, 0, 6);
+            box.Children.Add(title);
+            foreach (var p in list)
+            {
+                var person = p;
+                Button unblock = null;
+                unblock = UI.Glass("\uE785", "set.acc.unblock", async (o, e) =>
+                {
+                    unblock.IsEnabled = false;
+                    string r = await SocialApi.DmBlock(person.Id, false);
+                    if (r != null) { unblock.IsEnabled = true; ShowToast(r); return; }
+                    ShowToast(string.Format(Loc.T("set.acc.unblocked"), person.Nickname));
+                    await FillBlocked(box);
+                }, 7);
+                unblock.VerticalAlignment = VerticalAlignment.Center;
+                var row = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
+                DockPanel.SetDock(unblock, System.Windows.Controls.Dock.Right);
+                row.Children.Add(unblock);
+                var who = UI.Row(UI.Avatar(person, 28), UI.T(person.Nickname, 13.5));
+                ((FrameworkElement)who.Children[1]).VerticalAlignment = VerticalAlignment.Center;
+                ((FrameworkElement)who.Children[1]).Margin = new Thickness(10, 0, 0, 0);
+                row.Children.Add(who);
+                box.Children.Add(row);
+            }
+        }
+
         DateTime _resetArmed = DateTime.MinValue;
         readonly DispatcherTimer _resetTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
 
@@ -271,6 +304,45 @@ namespace MizuEngine
                 }));
             }
             priv.Children.Add(groupRow);
+            // Кто может писать в личку и куда попадают сообщения от незнакомых (0.11.5)
+            var dmLabel = UI.L("set.acc.dm", 13.5, wrap: true);
+            dmLabel.Margin = new Thickness(0, 14, 0, 6);
+            priv.Children.Add(dmLabel);
+            var dmRow = new WrapPanel();
+            string dmFrom = me?.DmFrom ?? "followers";
+            foreach (var k in new[] { "everyone", "followers", "friends" })
+            {
+                string key = k;
+                dmRow.Children.Add(UI.Tab("set.acc.dm." + key, "dmfrom", dmFrom == key, async (o, e) =>
+                {
+                    string r = await SocialApi.UpdateMe(new System.Text.Json.Nodes.JsonObject { ["dm_from"] = key });
+                    ShowToast(r ?? Loc.T("set.saved"));
+                }));
+            }
+            priv.Children.Add(dmRow);
+            var reqLabel = UI.L("set.acc.dmreq", 13.5, wrap: true);
+            reqLabel.Margin = new Thickness(0, 14, 0, 6);
+            priv.Children.Add(reqLabel);
+            var reqRow = new WrapPanel();
+            string dmStr = me?.DmStrangers ?? "requests";
+            foreach (var k in new[] { "requests", "chats" })
+            {
+                string key = k;
+                reqRow.Children.Add(UI.Tab("set.acc.dmreq." + key, "dmstrangers", dmStr == key, async (o, e) =>
+                {
+                    string r = await SocialApi.UpdateMe(new System.Text.Json.Nodes.JsonObject { ["dm_strangers"] = key });
+                    if (r == null) Inbox.RefreshRequests();
+                    ShowToast(r ?? Loc.T("set.saved"));
+                }));
+            }
+            priv.Children.Add(reqRow);
+            var dmHint = UI.L("set.acc.dm.d", 12, sub: true, wrap: true);
+            dmHint.Margin = new Thickness(0, 8, 0, 0);
+            priv.Children.Add(dmHint);
+            // Заблокированные: список с кнопкой «Разблокировать»
+            var blockedBox = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
+            priv.Children.Add(blockedBox);
+            _ = FillBlocked(blockedBox);
             // «Сейчас слушает» в профиле (0.11.4): кто видит трек из плеера
             var npLabel = UI.L("np.vis", 13.5, wrap: true);
             npLabel.Margin = new Thickness(0, 14, 0, 6);

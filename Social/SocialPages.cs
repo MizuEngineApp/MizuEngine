@@ -1034,33 +1034,17 @@ namespace MizuEngine
                 sp.Children.Add(pic);
             }
 
-            // Лайк и комментарии
-            var heart = UI.Icon(post.Liked ? "" : "", 15);
-            var count = UI.T(post.Likes.ToString(), 13, true);
-            count.Margin = new Thickness(7, 0, 0, 0);
-            var likeBtn = new Button { Style = (Style)UI.Owner.FindResource("GlassButton"), Padding = new Thickness(12, 6, 12, 6), Content = UI.Row(heart, count) };
-            void PaintLike()
+            // Лайк (объёмное сердечко с анимацией, 0.11.5) и комментарии
+            bool canLike = Supa.SignedIn && SocialApi.MyProfile?.Banned != true;
+            var likeBtn = Heart.LikeButton(post.Liked, post.Likes, async on =>
             {
-                heart.Text = post.Liked ? "" : "";
-                if (post.Liked) heart.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x5C, 0x8A));
-                else heart.SetResourceReference(TextBlock.ForegroundProperty, "Text");
-                count.Text = post.Likes.ToString();
-            }
-            PaintLike();
-            likeBtn.Click += async (s, e) =>
-            {
-                likeBtn.IsEnabled = false;
-                bool was = post.Liked;
-                post.Liked = !was; post.Likes += was ? -1 : 1; PaintLike();
-                if (!was) Motion.Pop(heart, 1.5);
-                string err = was ? await SocialApi.Unlike(post.Id) : await SocialApi.Like(post.Id);
-                if (err != null) { post.Liked = was; post.Likes += was ? 1 : -1; PaintLike(); _toast(err); }
-                likeBtn.IsEnabled = true;
-            };
+                string err = on ? await SocialApi.Like(post.Id) : await SocialApi.Unlike(post.Id);
+                return err;
+            }, _toast, 16, (on, n) => { post.Liked = on; post.Likes = n; }, canLike);
 
             var ccount = UI.T(post.Comments.ToString(), 13, true);
             ccount.Margin = new Thickness(7, 0, 0, 0);
-            var commentBtn = new Button { Style = (Style)UI.Owner.FindResource("GlassButton"), Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(8, 0, 0, 0), Content = UI.Row(UI.Icon("", 15), ccount) };
+            var commentBtn = new Button { Style = (Style)UI.Owner.FindResource("GlassButton"), Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(8, 0, 0, 0), Content = UI.Row(UI.Icon("\uE8F2", 15), ccount) };
             commentBtn.ToolTip = Loc.T("comments.title");
 
             var bar = UI.Row(likeBtn, commentBtn);
@@ -1071,7 +1055,7 @@ namespace MizuEngine
             commentBtn.Click += (s, e) =>
             {
                 if (comments != null) { var c = comments; comments = null; Motion.Exit(c, 0, () => sp.Children.Remove(c)); return; }
-                comments = CommentsView(post, n => { post.Comments = n; ccount.Text = n.ToString(); });
+                comments = Comments("post", post.Id, n => { post.Comments = n; ccount.Text = n.ToString(); });
                 sp.Children.Add(comments);
                 Motion.Enter(comments);
             };
@@ -1109,98 +1093,6 @@ namespace MizuEngine
             panel.Children.Add(row);
             box.Child = panel;
             return box;
-        }
-
-        /// <summary>Комментарии под постом: список и поле ввода. changed — новое число комментариев.</summary>
-        FrameworkElement CommentsView(Post post, Action<int> changed)
-        {
-            var sp = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
-            var list = new StackPanel();
-            sp.Children.Add(list);
-
-            var input = new Grid { Margin = new Thickness(0, 8, 0, 0) };
-            input.ColumnDefinitions.Add(new ColumnDefinition());
-            input.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var box = UI.Field("", 1000);
-            box.SetResourceReference(FrameworkElement.TagProperty, "comments.placeholder");
-            var send = new Button { Style = (Style)UI.Owner.FindResource("PrimaryButton"), Margin = new Thickness(8, 0, 0, 0) };
-            send.Content = new TextBlock { Text = "", FontFamily = (FontFamily)UI.Owner.FindResource("Icons"), FontSize = 13 };
-            Grid.SetColumn(send, 1);
-            input.Children.Add(box);
-            input.Children.Add(send);
-            if (Supa.SignedIn) sp.Children.Add(input);
-
-            async Task Fill()
-            {
-                var items = await SocialApi.GetComments(post.Id);
-                list.Children.Clear();
-                if (items.Count == 0) { var t = UI.L("comments.empty", 12.5, sub: true); t.Margin = new Thickness(2, 0, 0, 4); list.Children.Add(t); }
-                bool staff = SocialApi.MyProfile?.CanPost == true;
-                foreach (var c in items) list.Children.Add(CommentRow(c, c.Author.Id == Supa.Me || staff, Fill));
-                Motion.Stagger(list);
-                changed(items.Count);
-            }
-
-            async Task Send()
-            {
-                string text = box.Text.Trim();
-                if (text.Length == 0) return;
-                send.IsEnabled = false;
-                string err = await SocialApi.AddComment(post.Id, text);
-                send.IsEnabled = true;
-                if (err != null) { _toast(err); return; }
-                box.Text = "";
-                await Fill();
-            }
-            send.Click += async (s, e) => await Send();
-            box.KeyDown += async (s, e) => { if (e.Key == Key.Enter) { e.Handled = true; await Send(); } };
-            list.Children.Add(UI.Loading());
-            _ = Fill();
-            return sp;
-        }
-
-        FrameworkElement CommentRow(Comment c, bool canDelete, Func<Task> reload)
-        {
-            var g = new Grid { Margin = new Thickness(0, 4, 0, 4) };
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            g.ColumnDefinitions.Add(new ColumnDefinition());
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var av = UI.Avatar(c.Author, 30);
-            av.VerticalAlignment = VerticalAlignment.Top;
-            UI.Hand(av);
-            av.MouseLeftButtonUp += (s, e) => { Motion.Capture(av, "avatar:" + c.Author.Id); _ = OpenProfile(c.Author); };
-            g.Children.Add(av);
-
-            var bubble = new Border { CornerRadius = new CornerRadius(14), Padding = new Thickness(12, 7, 12, 8), Margin = new Thickness(8, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
-            bubble.SetResourceReference(Border.BackgroundProperty, "HoverBg");
-            var inner = new StackPanel();
-            var nr = UI.Row(UI.T(c.Author.Nickname, 12.5, true));
-            if (c.Author.Verified) { var b = UI.Badge(13, c.Author.Badge); b.Margin = new Thickness(5, 0, 0, 0); nr.Children.Add(b); }
-            if (c.Author.IsPlus) nr.Children.Add(UI.PlusAfter(13, 5));
-            var time = UI.T(UI.Ago(c.Created), 11, sub: true);
-            time.Margin = new Thickness(8, 0, 0, 0);
-            nr.Children.Add(time);
-            inner.Children.Add(nr);
-            var text = UI.T(c.Body, 13.5, wrap: true);
-            text.Margin = new Thickness(0, 2, 0, 0);
-            inner.Children.Add(text);
-            bubble.Child = inner;
-            Grid.SetColumn(bubble, 1);
-            g.Children.Add(bubble);
-
-            if (canDelete)
-            {
-                var del = new Button { Style = (Style)UI.Owner.FindResource("CaptionBtn"), Width = 30, Height = 28, Content = "", ToolTip = Loc.T("comments.delete"), VerticalAlignment = VerticalAlignment.Top };
-                del.Click += async (s, e) =>
-                {
-                    string err = await SocialApi.DeleteComment(c.Id);
-                    if (err != null) { _toast(err); return; }
-                    await reload();
-                };
-                Grid.SetColumn(del, 2);
-                g.Children.Add(del);
-            }
-            return g;
         }
 
         // ---------- друзья (превью) ----------
@@ -1330,7 +1222,10 @@ namespace MizuEngine
         {
             var followTask = SocialApi.IsFollowing(p.Id);
             var stateTask = SocialApi.StateWith(p.Id);
-            await Task.WhenAll(followTask, stateTask);
+            var dmTask = p.Bot ? Task.FromResult<(bool ok, string dmFrom, bool blocked)>((false, null, false)) : SocialApi.DmStatus(p.Id);
+            await Task.WhenAll(followTask, stateTask, dmTask);
+            var dm = dmTask.Result;
+            Button msg = null;
             bool following = followTask.Result;
             var (state, rid) = stateTask.Result;
 
@@ -1346,6 +1241,8 @@ namespace MizuEngine
                 following = !following;
                 SetFollow();
                 Motion.Pop(follow, 0.92);
+                // «Подписчики и друзья»: после подписки писать может стать можно (или наоборот)
+                if (msg != null && state != FriendState.Friends) { dm = await SocialApi.DmStatus(p.Id); SetMsg(); }
                 await refreshStats();
             };
             AddAction(actions, follow);
@@ -1373,10 +1270,25 @@ namespace MizuEngine
             };
             AddAction(actions, friend);
 
-            if (state == FriendState.Friends)
+            // «Написать» (0.11.5): друзьям — всегда; остальным — если их настройка «Кто может мне писать» разрешает.
+            // Нельзя — кнопка серая, по наведению и нажатию подсказка «rainy принимает сообщения только от друзей»
+            if (!p.Bot)
             {
-                var msg = UI.Glass("", "profile.message", (s, e) => { _chatWith = p.Id; _groupOpen = 0; _people[p.Id] = p; _navigate("chats"); }, 9);
+                msg = UI.Glass("", "profile.message", (s, e) =>
+                {
+                    if (state != FriendState.Friends && !dm.Item1) { _toast(DmClosedText(p, dm.Item2)); return; }
+                    _chatWith = p.Id; _groupOpen = 0; _people[p.Id] = p; _navigate("chats");
+                }, 9);
+                SetMsg();
                 AddAction(actions, msg);
+            }
+
+            void SetMsg()
+            {
+                if (msg == null) return;
+                bool open = state == FriendState.Friends || dm.Item1;
+                msg.Opacity = open ? 1 : 0.45;
+                msg.ToolTip = open ? null : DmClosedText(p, dm.Item2);
             }
         }
 

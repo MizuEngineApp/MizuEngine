@@ -85,6 +85,7 @@ namespace MizuEngine
                 }, null, -1, true);
             }
             catch { }
+            MemoryKeeper.TrimSelf();   // сторож только ждёт — в диспетчере задач он почти ничего не весит
             try { p.WaitForExit(); } catch { return; }
             int code = 0;
             try { code = p.ExitCode; } catch { }
@@ -222,8 +223,15 @@ namespace MizuEngine
                 if (!hung && silent > 6000)
                 {
                     hung = true;
-                    Settings.Log(new Exception($"Окно не отвечает уже {silent / 1000} с" + (dumped ? "" : " — сторож снимает снимок для поиска причины (hang.dmp)")));
-                    if (!dumped) { dumped = true; Watchdog.RequestHangDump(); }
+                    Settings.Log(new Exception($"Окно не отвечает уже {silent / 1000} с"));
+                }
+                // Снимок памяти — только при долгом зависании (20+ с): сам снимок на несколько секунд останавливает программу,
+                // и при коротких подвисаниях он лишь добавлял ещё одно «не отвечает»
+                if (hung && !dumped && silent > 20000)
+                {
+                    dumped = true;
+                    Settings.Log(new Exception($"Окно не отвечает уже {silent / 1000} с — сторож снимает снимок для поиска причины (hang.dmp)"));
+                    Watchdog.RequestHangDump();
                 }
                 else if (hung && silent < 2000)
                 {

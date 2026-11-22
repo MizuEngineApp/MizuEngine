@@ -35,6 +35,8 @@ namespace MizuEngine
             return new List<Win>(_list);
         }
 
+        readonly System.Text.StringBuilder _title = new System.Text.StringBuilder(4);
+
         bool OnWindow(IntPtr h, IntPtr _)
         {
             if (h == _own || !Native.IsWindowVisible(h) || Native.IsIconic(h)) return true;
@@ -43,7 +45,7 @@ namespace MizuEngine
             long ex = Native.GetWindowLongPtr(h, Native.GWL_EXSTYLE).ToInt64();
             if ((ex & Native.WS_EX_TOOLWINDOW) != 0) return true;
             if ((ex & Native.WS_EX_TRANSPARENT) != 0) return true;   // чужие оверлеи, сквозь которые кликают
-            if (Native.GetWindowTextLength(h) == 0) return true;
+            if (DockNative.InternalGetWindowText(h, _title, _title.Capacity) == 0) return true;   // без сообщений окну: не зависнем на чужом «замёрзшем» окне
 
             string cls = ClassOf(h);
             if (IsShellClass(cls)) return true;

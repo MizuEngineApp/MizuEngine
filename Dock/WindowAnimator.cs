@@ -206,8 +206,9 @@ namespace MizuEngine
             }
             _minimizing = false;
             _realDone = false;
-            if (shot == null || Themes.SafeMode) ShowThumb(hwnd);   // снимка нет — запасной режим: живая миниатюра «вырастает» из значка
-            Start(Themes.SafeMode ? null : shot?.Image);
+            var img = shot == null || Themes.SafeMode ? null : shot.Image;   // сжатый снимок распаковывается здесь
+            if (img == null) ShowThumb(hwnd);   // снимка нет — запасной режим: живая миниатюра «вырастает» из значка
+            Start(img);
             Pose(1);
         }
 
@@ -631,7 +632,74 @@ namespace MizuEngine
         /// Снимок окна, сделанный при сворачивании, — из него «вытекает» окно при разворачивании.
         /// Храним только для свёрнутых окон (не больше 6), после разворачивания сразу выбрасываем.
         /// </summary>
-        sealed class Shot { public BitmapSource Image; public Native.RECT Full, Frame; public long Tick; }
+        /// <summary>
+        /// Снимок свёрнутого окна. Пока окно свёрнуто, картинка лежит сжатой (в 5–15 раз меньше): раньше каждый снимок
+        /// занимал память дважды (картинка WPF держит два буфера) — 6 развёрнутых на весь экран окон съедали ~100 МБ.
+        /// При разворачивании картинка распаковывается за доли кадра — анимация та же, пиксель в пиксель.
+        /// </summary>
+        sealed class Shot
+        {
+            BitmapSource _image;
+            byte[] _packed;
+            int _w, _h;
+            public Native.RECT Full, Frame;
+            public long Tick;
+
+            public Shot(BitmapSource img) { _image = img; }
+
+            public BitmapSource Image
+            {
+                get
+                {
+                    if (_image == null && _packed != null)
+                    {
+                        try
+                        {
+                            var raw = new byte[_w * _h * 4];
+                            using (var ms = new System.IO.MemoryStream(_packed))
+                            using (var z = new System.IO.Compression.DeflateStream(ms, System.IO.Compression.CompressionMode.Decompress))
+                            {
+                                int got = 0, n;
+                                while (got < raw.Length && (n = z.Read(raw, got, raw.Length - got)) > 0) got += n;
+                            }
+                            var wb = new WriteableBitmap(_w, _h, 96, 96, PixelFormats.Pbgra32, null);
+                            wb.WritePixels(new Int32Rect(0, 0, _w, _h), raw, _w * 4, 0);
+                            _image = wb;
+                        }
+                        catch (Exception e) { Settings.Log(e); _packed = null; }
+                    }
+                    return _image;
+                }
+            }
+
+            /// <summary>Сжать картинку в фоне (зовётся в потоке оболочки, когда сворачивание закончилось).</summary>
+            public void Pack()
+            {
+                if (_packed != null || _image is not BitmapSource src) return;
+                int w = src.PixelWidth, h = src.PixelHeight;
+                var raw = new byte[w * h * 4];
+                try { src.CopyPixels(raw, w * 4, 0); } catch { return; }
+                var d = Dispatcher.CurrentDispatcher;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    byte[] packed;
+                    try
+                    {
+                        using var ms = new System.IO.MemoryStream(raw.Length / 6);
+                        using (var z = new System.IO.Compression.DeflateStream(ms, System.IO.Compression.CompressionLevel.Fastest, true))
+                            z.Write(raw, 0, raw.Length);
+                        packed = ms.ToArray();
+                    }
+                    catch { return; }
+                    d.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+                    {
+                        if (!ReferenceEquals(_image, src)) return;   // снимок уже заменили
+                        _w = w; _h = h; _packed = packed;
+                        _image = null;   // несжатая картинка уходит из памяти
+                    }));
+                });
+            }
+        }
 
         static class Shots
         {
@@ -646,7 +714,12 @@ namespace MizuEngine
                     foreach (var kv in _all) if (kv.Value.Tick < min) { min = kv.Value.Tick; oldest = kv.Key; }
                     _all.Remove(oldest);
                 }
-                _all[h] = new Shot { Image = img, Full = full, Frame = frame, Tick = Environment.TickCount64 };
+                var shot = new Shot(img) { Full = full, Frame = frame, Tick = Environment.TickCount64 };
+                _all[h] = shot;
+                // Когда «джинн» доиграет (≈0.5 с), снимок сжимается
+                var t = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1.5) };
+                t.Tick += (o, e) => { t.Stop(); if (_all.TryGetValue(h, out var s) && ReferenceEquals(s, shot) && Native.IsIconic(h)) shot.Pack(); };
+                t.Start();
             }
 
             public static Shot Get(IntPtr h)

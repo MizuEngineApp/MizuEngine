@@ -16,11 +16,18 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Иконка exe: её берут Проводник, док, Alt+Tab и заголовки окон -->
     <ApplicationIcon>Assets\MizuEngine.ico</ApplicationIcon>
-    <Version>0.11.4</Version>
+    <Version>0.11.5</Version>
     <!-- Меньше памяти: без фонового сборщика мусора и с режимом экономии памяти -->
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Быстрый запуск и меньше памяти: код заранее переводится в машинный при сборке (ReadyToRun), как у обычных
+         программ на C++ (Telegram, Discord). Раньше всё переводилось «на лету» при каждом запуске — отсюда долгий
+         первый запуск после включения ПК и после обновления, и лишние десятки МБ памяти под переведённый код. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained Condition="'$(SelfContained)' == ''">false</SelfContained>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <TieredPGO>false</TieredPGO>
 
     <!-- Автор и авторские права: видны в «Свойства → Подробно» у MizuEngine.exe -->
     <Product>MizuEngine</Product>
@@ -61,6 +68,10 @@
 
   <ItemGroup>
     <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="7" />
+    <!-- Сборщик мусора убирает почаще и понемногу: на процессорах с большим кэшем (AMD X3D и т. п.) он по умолчанию
+         копит до сотни МБ «мусора» перед уборкой — в диспетчере задач это выглядело как огромный расход памяти -->
+    <RuntimeHostConfigurationOption Include="System.GC.Gen0Size" Value="16777216" />
+    <RuntimeHostConfigurationOption Include="System.GC.Gen0MaxBudget" Value="33554432" />
     <!-- Та же иконка внутри exe — для трея (нужный размер под масштаб экрана) -->
     <EmbeddedResource Include="Assets\MizuEngine.ico" LogicalName="MizuEngine.ico" />
     <!-- Иконка в меню слева: уменьшенная копия MizuEngine_icon_4k.png (4K-файл в программу не кладём — он весит 2 МБ) -->

@@ -514,6 +514,13 @@ namespace MizuEngine
         public static async Task<string> Insert(string table, JsonObject row) =>
             (await Send(HttpMethod.Post, "/rest/v1/" + table, row)).error;
 
+        /// <summary>Вставка с ответом сервера (новая строка — например, чтобы узнать её id).</summary>
+        public static async Task<(JsonNode json, string error)> InsertReturning(string table, JsonObject row)
+        {
+            var r = await Send(HttpMethod.Post, "/rest/v1/" + table, row);
+            return (r.json, r.error);
+        }
+
         public static async Task<string> Update(string table, string filter, JsonObject changes) =>
             (await Send(HttpMethod.Patch, $"/rest/v1/{table}?{filter}", changes)).error;
 
@@ -553,6 +560,68 @@ namespace MizuEngine
             }
             catch (Exception e) { Settings.Log(e); return null; }
         }
+
+        /// <summary>
+        /// Загрузка в любое хранилище (0.11.5: закрытое «builds» для файлов сборок). Без перезаписи: имя файла всегда новое.
+        /// Возвращает null — получилось, иначе текст ошибки сервера.
+        /// </summary>
+        public static async Task<string> UploadTo(string bucket, string objectPath, byte[] data, string contentType)
+        {
+            if (!SignedIn) return "not_signed_in";
+            await EnsureFresh();
+            var req = new HttpRequestMessage(HttpMethod.Post, $"{Base}/storage/v1/object/{bucket}/{objectPath}") { Content = new ByteArrayContent(data) };
+            req.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+            req.Headers.Add("apikey", SupaConfig.AnonKey);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Session.AccessToken);
+            try
+            {
+                // Большой файл на медленном VPN может идти дольше обычного таймаута — даём ему до 5 минут
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(5));
+                using var resp = await BigHttp.SendAsync(req, cts.Token);
+                if (resp.IsSuccessStatusCode) return null;
+                string text = await resp.Content.ReadAsStringAsync();
+                Settings.Log(new Exception($"upload {bucket}: {(int)resp.StatusCode} {text}"));
+                return string.IsNullOrEmpty(text) ? resp.StatusCode.ToString() : text;
+            }
+            catch (Exception e) { Settings.Log(e); return "network"; }
+        }
+
+        /// <summary>Скачивание из закрытого хранилища (нужен вход; сервер сам проверяет, можно ли этому человеку).</summary>
+        public static async Task<(byte[] data, int status)> DownloadPrivate(string bucket, string objectPath)
+        {
+            if (!SignedIn) return (null, 401);
+            await EnsureFresh();
+            var req = new HttpRequestMessage(HttpMethod.Get, $"{Base}/storage/v1/object/authenticated/{bucket}/{objectPath}");
+            req.Headers.Add("apikey", SupaConfig.AnonKey);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Session.AccessToken);
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(5));
+                using var resp = await BigHttp.SendAsync(req, cts.Token);
+                if (!resp.IsSuccessStatusCode) return (null, (int)resp.StatusCode);
+                return (await resp.Content.ReadAsByteArrayAsync(), 200);
+            }
+            catch (Exception e) { Settings.Log(e); return (null, 0); }
+        }
+
+        /// <summary>Удалить файл из хранилища (свой или, для сотрудников, любой).</summary>
+        public static async Task<string> DeleteObject(string bucket, string objectPath)
+        {
+            if (!SignedIn) return "not_signed_in";
+            await EnsureFresh();
+            var req = new HttpRequestMessage(HttpMethod.Delete, $"{Base}/storage/v1/object/{bucket}/{objectPath}");
+            req.Headers.Add("apikey", SupaConfig.AnonKey);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Session.AccessToken);
+            try
+            {
+                using var resp = await Http.SendAsync(req);
+                return resp.IsSuccessStatusCode ? null : await resp.Content.ReadAsStringAsync();
+            }
+            catch (Exception e) { Settings.Log(e); return "network"; }
+        }
+
+        /// <summary>Отдельный клиент для больших файлов сборок: без общего таймаута (время задаётся на каждый запрос).</summary>
+        static readonly HttpClient BigHttp = new HttpClient { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
 
         public static async Task<byte[]> Download(string url)
         {

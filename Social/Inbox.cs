@@ -25,7 +25,18 @@ namespace MizuEngine
     internal static class Inbox
     {
         public static int Unread { get; private set; }
+        /// <summary>Непрочитанные в «Запросах» (0.11.5) — они не входят в цифру на «Чатах» и не дают уведомлений.</summary>
+        public static int RequestsUnread { get; private set; }
         public static event Action Changed;
+
+        /// <summary>Кто сейчас в «Запросах» (незнакомые, которых ещё не приняли).</summary>
+        public static HashSet<string> Requests { get; private set; } = new HashSet<string>();
+        static DateTime _requestsAt = DateTime.MinValue;
+
+        public static bool IsRequest(string id) => id != null && Requests.Contains(id);
+
+        /// <summary>Запросы поменялись (приняли, удалили, заблокировали) — перечитать при следующей проверке.</summary>
+        public static void RefreshRequests() { _requestsAt = DateTime.MinValue; Nudge(); }
         public static event Action<InboxMessage> Arrived;
 
         static Settings _s;
@@ -68,10 +79,11 @@ namespace MizuEngine
             Nudge();
         }
 
-        static void SetUnread(int n)
+        static void SetUnread(int n, int requests)
         {
-            if (n == Unread) return;
+            if (n == Unread && requests == RequestsUnread) return;
             Unread = n;
+            RequestsUnread = requests;
             Changed?.Invoke();
         }
 
@@ -81,12 +93,13 @@ namespace MizuEngine
             _busy = true;
             try
             {
-                if (!Supa.SignedIn) { _me = null; SetUnread(0); return; }
+                if (!Supa.SignedIn) { _me = null; Requests = new HashSet<string>(); SetUnread(0, 0); return; }
                 if (_me != Supa.Me)
                 {
                     _me = Supa.Me;
                     _lastPersonal = _lastGroup = -1;   // новый аккаунт: старые сообщения не показываем уведомлениями
                     _groupsAt = DateTime.MinValue;
+                    _requestsAt = DateTime.MinValue;
                 }
                 string account = _me, me = Supa.Q(_me);
                 var fresh = new List<InboxMessage>();
@@ -95,8 +108,17 @@ namespace MizuEngine
                 var rows = await Supa.Select(_lastPersonal < 0
                     ? $"messages?receiver=eq.{me}&select=id&order=id.desc&limit=1"
                     : $"messages?receiver=eq.{me}&id=gt.{_lastPersonal}&select=id,sender,kind,body&order=id.asc&limit=30");
-                var unreadRows = await Supa.Select($"messages?receiver=eq.{me}&read=eq.false&select=id&limit=999");
+                var unreadRows = await Supa.Select($"messages?receiver=eq.{me}&read=eq.false&select=id,sender&limit=999");
                 if (account != Supa.Me) return;   // аккаунт сменили, пока ждали ответа
+                // «Запросы» (незнакомые): раз в минуту и сразу, если написал кто-то новый
+                bool newPerson = rows != null && _lastPersonal >= 0 && rows.Any(r => (long?)r["id"] > _lastPersonal && !People.ContainsKey((string)r["sender"] ?? ""));
+                if (newPerson || (DateTime.UtcNow - _requestsAt).TotalSeconds > 60)
+                {
+                    var req = await SocialApi.DmRequests();
+                    if (account != Supa.Me) return;
+                    if (req != null) Requests = req;
+                    _requestsAt = DateTime.UtcNow;
+                }
                 if (rows != null)
                 {
                     if (_lastPersonal < 0) _lastPersonal = rows.Count > 0 ? (long?)rows[0]["id"] ?? 0 : 0;
@@ -106,10 +128,13 @@ namespace MizuEngine
                             long id = (long?)r["id"] ?? 0;
                             if (id <= _lastPersonal) continue;
                             _lastPersonal = id;
+                            if (IsRequest((string)r["sender"])) continue;   // запрос от незнакомого — без звука и карточки
                             fresh.Add(new InboxMessage { Id = id, FriendId = (string)r["sender"], SenderId = (string)r["sender"], Kind = (string)r["kind"] ?? "text", Text = (string)r["body"] ?? "" });
                         }
                 }
-                int unread = unreadRows?.Count ?? 0;
+                int unread = 0, requestsUnread = 0;
+                foreach (var r in unreadRows ?? new System.Text.Json.Nodes.JsonArray())
+                    if (IsRequest((string)r["sender"])) requestsUnread++; else unread++;
 
                 // 2) Группы
                 if ((DateTime.UtcNow - _groupsAt).TotalSeconds > 60)
@@ -152,7 +177,7 @@ namespace MizuEngine
                 }
                 else if (_lastGroup < 0) _lastGroup = 0;
 
-                SetUnread(unread);
+                SetUnread(unread, requestsUnread);
 
                 // 3) Уведомления: не больше трёх за раз (после долгого перерыва не засыпаем экран карточками)
                 foreach (var m in fresh.Skip(Math.Max(0, fresh.Count - 3)))

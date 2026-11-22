@@ -442,9 +442,10 @@ namespace MizuEngine
                     ? new LinearGradientBrush(Color.FromRgb(0x7F, 0xC4, 0xFF), Color.FromRgb(0x7A, 0x3C, 0xE8), 30)
                     : UI.WebBrush(p.BannerUrl, 400);
                 g.Children.Add(bg);
+                BannerFx fx = null;
                 if (id != null)
                 {
-                    var fx = new BannerFx(id, 12);
+                    fx = new BannerFx(id, 12) { Paused = true };   // превью оживает только под мышью
                     g.Children.Add(fx);
                 }
                 var label = new Border { CornerRadius = new CornerRadius(7), Background = new SolidColorBrush(Color.FromArgb(0x90, 0, 0, 0)), Padding = new Thickness(7, 2, 7, 3), Margin = new Thickness(6), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Bottom };
@@ -456,6 +457,7 @@ namespace MizuEngine
                 var frame = new Border { CornerRadius = new CornerRadius(14), BorderThickness = new Thickness(sel ? 2.5 : 1), Padding = new Thickness(2), Margin = new Thickness(0, 0, 8, 8), Child = g, Cursor = Plus.IsActive ? Cursors.Hand : Cursors.Arrow };
                 frame.SetResourceReference(Border.BorderBrushProperty, sel ? "Accent" : "CardRim");
                 g.Clip = new RectangleGeometry(new Rect(0, 0, 132, 58), 12, 12);
+                if (fx != null) { frame.MouseEnter += (s, e) => fx.Paused = false; frame.MouseLeave += (s, e) => fx.Paused = true; }
                 if (Plus.IsActive) frame.MouseLeftButtonUp += async (s, e) => await Save(new JsonObject { ["banner_fx"] = id });
                 bannerTiles.Children.Add(frame);
             }
@@ -475,7 +477,8 @@ namespace MizuEngine
                 face.HorizontalAlignment = HorizontalAlignment.Center;
                 face.VerticalAlignment = VerticalAlignment.Center;
                 g.Children.Add(face);
-                if (id != null) g.Children.Add(new FrameFx(id, av));
+                FrameFx ffx = id != null ? new FrameFx(id, av) { Paused = true } : null;
+                if (ffx != null) g.Children.Add(ffx);
                 var stack = new StackPanel();
                 stack.Children.Add(g);
                 var lt = UI.L(id == null ? "decor.none" : "decor.frame." + id, 11.5, true);
@@ -485,6 +488,7 @@ namespace MizuEngine
                 var frame = new Border { CornerRadius = new CornerRadius(16), BorderThickness = new Thickness(sel ? 2.5 : 1), Padding = new Thickness(4, 2, 4, 6), Margin = new Thickness(0, 0, 8, 8), Child = stack, Cursor = Plus.IsActive ? Cursors.Hand : Cursors.Arrow };
                 frame.SetResourceReference(Border.BorderBrushProperty, sel ? "Accent" : "CardRim");
                 frame.SetResourceReference(Border.BackgroundProperty, "HoverBg");
+                if (ffx != null) { frame.MouseEnter += (s, e) => ffx.Paused = false; frame.MouseLeave += (s, e) => ffx.Paused = true; }
                 if (Plus.IsActive) frame.MouseLeftButtonUp += async (s, e) => await Save(new JsonObject { ["avatar_frame"] = id });
                 frameTiles.Children.Add(frame);
             }

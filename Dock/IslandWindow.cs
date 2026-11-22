@@ -547,14 +547,20 @@ namespace MizuEngine
                 dc.PushClip(new RectangleGeometry(pill, r, r));
                 dc.PushOpacity(_contentAlpha);
                 double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
-                switch (_content)
+                // Пружина капсулы на миг сжимает её меньше содержимого — тогда содержимое просто не рисуем
+                // (раньше это давало ошибку «ширина и высота не должны быть отрицательными» в каждом кадре)
+                try
                 {
-                    case Mode.Idle: DrawIdle(dc, pill); break;
-                    case Mode.Media: DrawCompact(dc, pill); break;
-                    case Mode.Expanded: DrawExpanded(dc, pill, dpi); break;
-                    case Mode.Notify: DrawNotify(dc, pill, dpi); break;
-                    case Mode.Agent: DrawAgent(dc, pill, dpi); break;
+                    switch (_content)
+                    {
+                        case Mode.Idle: DrawIdle(dc, pill); break;
+                        case Mode.Media: if (pill.Height > 18 && pill.Width > 40) DrawCompact(dc, pill); break;
+                        case Mode.Expanded: if (pill.Width > 40) DrawExpanded(dc, pill, dpi); break;
+                        case Mode.Notify: if (pill.Height > 22) DrawNotify(dc, pill, dpi); break;
+                        case Mode.Agent: if (pill.Height > 14) DrawAgent(dc, pill, dpi); break;
+                    }
                 }
+                catch (ArgumentException) { }
                 dc.Pop();
                 dc.Pop();
             }

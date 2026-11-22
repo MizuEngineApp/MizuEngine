@@ -190,7 +190,6 @@ namespace MizuEngine
 
         // ================== иконки ==================
 
-        static readonly BlockingCollection<(string path, Action<ImageSource> done)> IconQueue = new BlockingCollection<(string, Action<ImageSource>)>();
         static readonly object IconLock = new object();
         static Thread _iconThread;
         const int IconPx = 128;   // хватает для увеличенного значка даже на 4K, а памяти вчетверо меньше, чем у 256 px
@@ -207,28 +206,37 @@ namespace MizuEngine
                 if (Icons.TryGetValue(path, out var cached)) return cached;
                 if (_iconThread == null)
                 {
+                    // Поток значков — с настоящим циклом сообщений (Dispatcher), а не «ждёт в очереди молча»:
+                    // Проводник создаёт в этом потоке скрытые окна, и поток, который не разбирает сообщения,
+                    // подвешивал всех, кто к этим окнам обращался (так «зависало» окно MizuEngine)
+                    var ready = new ManualResetEventSlim();
                     _iconThread = new Thread(() =>
                     {
-                        foreach (var (p, cb) in IconQueue.GetConsumingEnumerable())
-                        {
-                            ImageSource img;
-                            bool known;
-                            lock (IconLock) known = Icons.TryGetValue(p, out img);
-                            if (!known)
-                            {
-                                try { img = ShellImage(p, IconPx); } catch { img = null; }
-                                lock (IconLock) Icons[p] = img;
-                            }
-                            if (img != null) cb(img);
-                        }
+                        _iconDispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+                        ready.Set();
+                        System.Windows.Threading.Dispatcher.Run();
                     }) { IsBackground = true, Name = "MizuEngine dock icons" };
                     _iconThread.SetApartmentState(ApartmentState.STA);   // значкам Проводника нужен STA-поток
                     _iconThread.Start();
+                    ready.Wait();
                 }
             }
-            IconQueue.Add((path, done));
+            _iconDispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
+            {
+                ImageSource img;
+                bool known;
+                lock (IconLock) known = Icons.TryGetValue(path, out img);
+                if (!known)
+                {
+                    try { img = ShellImage(path, IconPx); } catch { img = null; }
+                    lock (IconLock) Icons[path] = img;
+                }
+                if (img != null) try { done(img); } catch (Exception e) { Settings.Log(e); }
+            }));
             return null;
         }
+
+        static System.Windows.Threading.Dispatcher _iconDispatcher;
 
         static ImageSource ShellImage(string path, int size)
         {
