@@ -367,7 +367,7 @@ namespace MizuEngine
 
             var tabs = new WrapPanel { Margin = new Thickness(0, 18, 0, 10) };
             var list = new StackPanel { Margin = new Thickness(0, 0, 14, 20), MaxWidth = 900, HorizontalAlignment = HorizontalAlignment.Left };
-            foreach (var k in new[] { "punished", "reports", "people", "groups", "log", "plus", "official" })
+            foreach (var k in new[] { "punished", "reports", "chatreports", "people", "groups", "log", "plus", "official" })
             {
                 string key = k;
                 tabs.Children.Add(UI.Tab("admin.tab." + key, "admintabs", _adminTab == key, async (s, e) => { _adminTab = key; await FillAdminTab(list); }));
@@ -394,6 +394,7 @@ namespace MizuEngine
                 case "groups": FillAdminGroups(list); return;
                 case "log": await FillAdminLog(list); return;
                 case "reports": await FillPostReports(list); return;
+                case "chatreports": await FillChatReports(list); return;
                 case "plus": await FillAdminPlus(list); return;
                 case "official": await FillAdminOfficial(list); return;
                 default: await FillPunished(list); return;
@@ -592,6 +593,62 @@ namespace MizuEngine
         /// Жалобы на посты: пост целиком, автор, сколько жалоб и на что.
         /// «Удалить пост» — пост и жалобы исчезают; «Оставить» — жалобы снимаются, пост остаётся.
         /// </summary>
+        /// <summary>0.11.6: жалобы на людей и группы из панели чата: кто, сколько, за что; «Открыть» и «Закрыть жалобы».</summary>
+        async Task FillChatReports(StackPanel list)
+        {
+            list.Children.Add(UI.Loading());
+            var items = await SocialApi.GetChatReports();
+            list.Children.Clear();
+            if (items == null) { list.Children.Add(Empty("admin.chatreports_none_server")); return; }
+            if (items.Count == 0) { list.Children.Add(Empty("admin.no_reports")); return; }
+            foreach (var it in items)
+            {
+                var rep = it;
+                var who = rep.User ?? rep.Group.Look();
+                var sp = new StackPanel();
+                var head = UI.Row(UI.Avatar(who, 38));
+                var names = new StackPanel { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+                var nr = UI.Row(UI.T(who.Nickname, 14, true));
+                if (who.Verified) { var b = UI.Badge(14, who.Badge); b.Margin = new Thickness(6, 0, 0, 0); nr.Children.Add(b); }
+                names.Children.Add(nr);
+                string sub = rep.User != null
+                    ? "@" + rep.User.Handle + " · №" + rep.User.Number
+                    : Loc.T("groups.subtitle") + (string.IsNullOrEmpty(rep.Group.Handle) ? " #" + rep.Group.Id : " · @" + rep.Group.Handle);
+                names.Children.Add(UI.T(sub, 11.5, sub: true));
+                head.Children.Add(names);
+                sp.Children.Add(head);
+
+                string reasons = string.Join(", ", rep.Reasons.Select(r => Loc.T("posts.report." + r)));
+                var info = UI.T(string.Format(Loc.T("admin.reports_info"), rep.Count, reasons, UI.Ago(rep.Last)), 12, sub: true, wrap: true);
+                info.Margin = new Thickness(0, 8, 0, 0);
+                info.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x9F, 0x0A));
+                sp.Children.Add(info);
+
+                var open = SmallButton("chats.open_profile", true);
+                open.Margin = new Thickness(0, 0, 8, 0);
+                open.Visibility = rep.User != null ? Visibility.Visible : Visibility.Collapsed;   // группу (галочку, название) правит админ в «Группах»
+                var keep = SmallButton("admin.report_close", false);
+                keep.Margin = new Thickness(0);
+                var row = UI.Row(open, keep);
+                row.Margin = new Thickness(0, 12, 0, 0);
+                sp.Children.Add(row);
+
+                var card = Wrap(sp);
+                card.Margin = new Thickness(0, 0, 0, 10);
+                open.Click += (s, e) => { if (rep.User != null) _ = OpenProfile(rep.User); };
+                keep.Click += async (s, e) =>
+                {
+                    open.IsEnabled = keep.IsEnabled = false;
+                    string err = await SocialApi.DismissChatReports(rep);
+                    if (err != null) { _toast(err); open.IsEnabled = keep.IsEnabled = true; return; }
+                    _toast(Loc.T("admin.chat_report_closed"));
+                    Motion.Exit(card, 0, () => list.Children.Remove(card));
+                };
+                list.Children.Add(card);
+            }
+            Motion.Stagger(list);
+        }
+
         async Task FillPostReports(StackPanel list)
         {
             list.Children.Add(UI.Loading());

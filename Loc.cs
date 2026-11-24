@@ -35,6 +35,12 @@ namespace MizuEngine
             Changed?.Invoke();
         }
 
+        /// <summary>Язык интерфейса для дат («24 ноября», «24 November»).</summary>
+        public static CultureInfo Culture
+        {
+            get { try { return CultureInfo.GetCultureInfo(Code); } catch { return CultureInfo.InvariantCulture; } }
+        }
+
         public static string T(string key) =>
             _current != null && _current.TryGetValue(key, out var v) ? v :
             All["en"].TryGetValue(key, out var e) ? e : key;
@@ -1390,7 +1396,50 @@ comments.reply_to=Ответ для {0}
 comments.reply_cancel=Отменить ответ
 comments.reply_deleted=Комментарий удалён
 comments.show_original=Показать комментарий
-likes.like=Нравится"),
+likes.like=Нравится
+chats.search=Поиск по чатам…
+chats.more=Ещё
+chats.notify_on=Включить уведомления
+chats.notify_off=Выключить уведомления
+chats.notify_on.done=Уведомления этого чата включены
+chats.notify_off.done=Уведомления этого чата выключены
+chats.open_profile=Открыть профиль
+chats.unread_n=Непрочитанных: {0}
+chats.call=Звонок
+chats.call_soon=Звонки появятся в одном из следующих обновлений
+chats.info_show=Показать профиль справа
+chats.info_hide=Скрыть панель справа
+groups.info_show=Информация о группе
+chats.info_tip=Показать или скрыть панель справа
+chats.info_close=Закрыть панель
+chats.send=Отправить
+chats.today=Сегодня
+chats.yesterday=Вчера
+chats.status=Статус
+chats.status_hidden=скрыт
+chats.user_id=ID пользователя
+groups.id=ID группы
+chats.copy=Скопировать
+chats.copied=Скопировано
+chats.notifications=Уведомления
+chats.write=Отправить сообщение
+chats.report=Пожаловаться
+chats.report_title=За что жалоба?
+chats.report_sent=Жалоба отправлена, спасибо
+chats.report_already=Ты уже отправил жалобу
+chats.block=Заблокировать
+chats.block.confirm=Нажми ещё раз, чтобы заблокировать
+chats.unblock=Разблокировать
+chats.unblocked={0} разблокирован(а)
+groups.leave.confirm=Нажми ещё раз, чтобы выйти
+groups.delete.confirm=Нажми ещё раз — группа удалится
+groups.leave.menu_confirm=Выбери «Выйти из группы» ещё раз, чтобы подтвердить
+groups.delete.menu_confirm=Выбери «Удалить группу» ещё раз, чтобы подтвердить
+groups.all_members=Все участники
+admin.tab.chatreports=Жалобы на людей
+admin.chatreports_none_server=Не удалось загрузить жалобы (нет сети или на сервере ещё не выполнен v11.sql)
+admin.report_close=Закрыть жалобы
+admin.chat_report_closed=Жалобы закрыты"),
 
             ["en"] = Parse(@"
 nav.home=Home
@@ -2724,7 +2773,50 @@ comments.reply_to=Reply to {0}
 comments.reply_cancel=Cancel reply
 comments.reply_deleted=Comment deleted
 comments.show_original=Show comment
-likes.like=Like"),
+likes.like=Like
+chats.search=Search chats…
+chats.more=More
+chats.notify_on=Turn notifications on
+chats.notify_off=Turn notifications off
+chats.notify_on.done=Notifications for this chat are on
+chats.notify_off.done=Notifications for this chat are off
+chats.open_profile=Open profile
+chats.unread_n=Unread: {0}
+chats.call=Call
+chats.call_soon=Calls are coming in a future update
+chats.info_show=Show profile panel
+chats.info_hide=Hide side panel
+groups.info_show=Group info
+chats.info_tip=Show or hide the side panel
+chats.info_close=Close panel
+chats.send=Send
+chats.today=Today
+chats.yesterday=Yesterday
+chats.status=Status
+chats.status_hidden=hidden
+chats.user_id=User ID
+groups.id=Group ID
+chats.copy=Copy
+chats.copied=Copied
+chats.notifications=Notifications
+chats.write=Send a message
+chats.report=Report
+chats.report_title=What's wrong?
+chats.report_sent=Report sent, thank you
+chats.report_already=You've already sent a report
+chats.block=Block
+chats.block.confirm=Click again to block
+chats.unblock=Unblock
+chats.unblocked={0} is unblocked
+groups.leave.confirm=Click again to leave
+groups.delete.confirm=Click again — the group will be deleted
+groups.leave.menu_confirm=Choose “Leave group” again to confirm
+groups.delete.menu_confirm=Choose “Delete group” again to confirm
+groups.all_members=All members
+admin.tab.chatreports=User reports
+admin.chatreports_none_server=Couldn't load reports (no connection or v11.sql hasn't been run on the server)
+admin.report_close=Close reports
+admin.chat_report_closed=Reports closed"),
 
             ["zh"] = Parse(@"
 nav.home=主页

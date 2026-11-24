@@ -79,6 +79,8 @@ namespace MizuEngine
         public string MsgCustomOut { get; set; }             // свой файл для отправки
         public int MsgVolume { get; set; } = 80;
         public Dictionary<string, long> GroupRead { get; set; } = new Dictionary<string, long>();   // группа → последнее прочитанное сообщение
+        public List<string> ChatMuted { get; set; } = new List<string>();   // 0.11.6: чаты без уведомлений и звука: "<аккаунт>:u:<id>" / "<аккаунт>:g:<id>"
+        public bool ChatInfoOpen { get; set; } = true;                      // 0.11.6: панель профиля справа в «Чатах» открыта
         public bool NotifyPreview { get; set; } = true;      // показывать текст сообщения в уведомлении
         public bool NotifyDnd { get; set; }                  // «Не беспокоить»: без звука и всплывающих уведомлений
 
@@ -219,6 +221,7 @@ namespace MizuEngine
             if (!ChatSounds.IsValid(MsgSoundIn, true, MsgCustomIn)) MsgSoundIn = "tg";
             if (!ChatSounds.IsValid(MsgSoundOut, false, MsgCustomOut)) MsgSoundOut = "swoosh";
             GroupRead ??= new Dictionary<string, long>();
+            ChatMuted ??= new List<string>();
         }
 
         static bool _frozen;

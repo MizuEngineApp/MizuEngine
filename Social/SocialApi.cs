@@ -176,6 +176,16 @@ namespace MizuEngine
     }
 
     /// <summary>Жалобы на один пост (для админ-панели): сам пост, его автор, сколько жалоб и на что.</summary>
+    /// <summary>0.11.6: жалобы на человека или группу (одна запись на того, на кого жалуются).</summary>
+    internal sealed class ChatReport
+    {
+        public Profile User;     // жалоба на человека
+        public Group Group;      // или на группу
+        public int Count;
+        public List<string> Reasons = new List<string>();
+        public DateTime Last;
+    }
+
     internal sealed class PostReport
     {
         public Post Post;
@@ -840,6 +850,49 @@ namespace MizuEngine
         }
 
         /// <summary>Отклонить жалобы на пост (пост остаётся).</summary>
+        // ---------- 0.11.6: жалобы на людей и группы (кнопка «Пожаловаться» в панели чата) ----------
+
+        /// <summary>Пожаловаться на человека: reason — spam / insult / other. Повторная жалоба — «уже отправлена».</summary>
+        public static async Task<string> ReportUser(string userId, string reason) =>
+            MapError(await Supa.Insert("chat_reports", new JsonObject { ["target_user"] = userId, ["reporter"] = Supa.Me, ["reason"] = reason }));
+
+        public static async Task<string> ReportGroup(long groupId, string reason) =>
+            MapError(await Supa.Insert("chat_reports", new JsonObject { ["target_group"] = groupId, ["reporter"] = Supa.Me, ["reason"] = reason }));
+
+        /// <summary>Жалобы на людей и группы для админ-панели: сверху — с самой свежей жалобой. null — нет сети (или не выполнен v11.sql).</summary>
+        public static async Task<List<ChatReport>> GetChatReports()
+        {
+            var rows = await Supa.Select("chat_reports?select=target_user,target_group,reason,created_at,u:target_user(*),g:target_group(*)&order=id.desc&limit=500");
+            if (rows == null) return null;
+            var byTarget = new Dictionary<string, ChatReport>();
+            var result = new List<ChatReport>();
+            foreach (var r in rows)
+            {
+                string uid = (string)r["target_user"];
+                long gid = (long?)r["target_group"] ?? 0;
+                string key = uid != null ? "u:" + uid : "g:" + gid;
+                if (!byTarget.TryGetValue(key, out var rep))
+                {
+                    rep = new ChatReport
+                    {
+                        User = uid != null ? Profile.From(r["u"]) : null,
+                        Group = gid > 0 ? Group.From(r["g"]) : null,
+                        Last = DateTime.TryParse((string)r["created_at"], out var l) ? l.ToLocalTime() : DateTime.Now
+                    };
+                    if (rep.User == null && rep.Group == null) continue;
+                    byTarget[key] = rep;
+                    result.Add(rep);
+                }
+                rep.Count++;
+                string reason = (string)r["reason"] ?? "other";
+                if (!rep.Reasons.Contains(reason)) rep.Reasons.Add(reason);
+            }
+            return result;
+        }
+
+        public static async Task<string> DismissChatReports(ChatReport rep) =>
+            MapError(await Supa.Delete("chat_reports", rep.User != null ? $"target_user=eq.{Supa.Q(rep.User.Id)}" : $"target_group=eq.{rep.Group.Id}"));
+
         public static async Task<string> DismissPostReports(long postId) =>
             MapError(await Supa.Delete("post_reports", $"post_id=eq.{postId}"));
 
@@ -1071,6 +1124,7 @@ namespace MizuEngine
             if (e.Contains("post_too_long")) return string.Format(Loc.T("err.post_too_long"), PostMaxLen);
             if (e.Contains("post_empty")) return Loc.T("err.post_empty");
             if (e.Contains("post_reports") && (e.Contains("duplicate") || e.Contains("unique"))) return Loc.T("posts.report_already");
+            if (e.Contains("chat_reports") && (e.Contains("duplicate") || e.Contains("unique"))) return Loc.T("chats.report_already");
             if (e.Contains("row-level security") && e.Contains("post_reports")) return Loc.T("err.report_own");
             // 0.11.5: человек ограничил, кто может ему писать (или заблокировал)
             if (e.Contains("row-level security") && e.Contains("\"messages\"")) return Loc.T("err.dm_closed");

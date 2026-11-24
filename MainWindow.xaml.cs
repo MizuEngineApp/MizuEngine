@@ -198,7 +198,13 @@ namespace MizuEngine
             base.OnClosing(e);
         }
 
-        void Min_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+        // Свой «_»: сворачиваем через «джинна» оболочки — копия окна появляется ДО того, как окно исчезнет
+        // (иначе Windows сначала убирает окно, и на миг виден рабочий стол)
+        void Min_Click(object sender, RoutedEventArgs e)
+        {
+            var h = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            if (h == IntPtr.Zero || !global::MizuEngine.Shell.MinimizeAnimated(h)) WindowState = WindowState.Minimized;
+        }
 
         void Max_Click(object sender, RoutedEventArgs e) =>
             WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;

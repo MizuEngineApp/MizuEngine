@@ -33,6 +33,11 @@ namespace MizuEngine
         public static HashSet<string> Requests { get; private set; } = new HashSet<string>();
         static DateTime _requestsAt = DateTime.MinValue;
 
+        static Dictionary<long, int> _groupUnread = new Dictionary<long, int>();
+
+        /// <summary>Сколько непрочитанных в группе (синяя точка у строки группы, 0.11.6).</summary>
+        public static int GroupUnread(long gid) => _groupUnread.TryGetValue(gid, out int n) ? n : 0;
+
         public static bool IsRequest(string id) => id != null && Requests.Contains(id);
 
         /// <summary>Запросы поменялись (приняли, удалили, заблокировали) — перечитать при следующей проверке.</summary>
@@ -67,6 +72,25 @@ namespace MizuEngine
         }
 
         static string GroupKey(long gid) => _me + ":" + gid;
+
+        // ---------- 0.11.6: уведомления отдельного чата (переключатель «Уведомления» в панели справа) ----------
+
+        /// <summary>Настройки программы (для панели чата: открыта ли она, какие чаты без звука).</summary>
+        public static Settings Prefs => _s;
+
+        static string MuteKey(string chat) => (Supa.Me ?? "") + ":" + chat;
+
+        /// <summary>chat — "u:&lt;id человека&gt;" или "g:&lt;id группы&gt;". Без уведомлений — ни звука, ни карточки, ни Island.</summary>
+        public static bool IsMuted(string chat) => chat != null && _s != null && _s.ChatMuted.Contains(MuteKey(chat));
+
+        public static void SetMuted(string chat, bool muted)
+        {
+            if (_s == null || chat == null) return;
+            string k = MuteKey(chat);
+            _s.ChatMuted.Remove(k);
+            if (muted) _s.ChatMuted.Add(k);
+            _s.Save();
+        }
 
         static long ReadMark(long gid) => _s != null && _s.GroupRead.TryGetValue(GroupKey(gid), out long v) ? v : -1;
 
@@ -157,10 +181,11 @@ namespace MizuEngine
                     var grows = await Supa.Select($"group_messages?group_id=in.({ids})&id=gt.{Math.Max(0, from)}&sender=neq.{me}&select=id,group_id,sender,kind,body&order=id.asc&limit=300");
                     if (account != Supa.Me) return;
                     long maxId = _lastGroup;
+                    var perGroup = new Dictionary<long, int>();
                     foreach (var r in grows ?? new System.Text.Json.Nodes.JsonArray())
                     {
                         long id = (long?)r["id"] ?? 0, gid = (long?)r["group_id"] ?? 0;
-                        if (id > ReadMark(gid)) unread++;
+                        if (id > ReadMark(gid)) { unread++; perGroup[gid] = perGroup.TryGetValue(gid, out int c) ? c + 1 : 1; }
                         // Уведомляем только о том, что пришло после прошлой проверки И ещё не прочитано.
                         // Раньше после пустой первой проверки отметка становилась 0, и при следующем открытии
                         // программы старые сообщения групп снова приходили уведомлениями.
@@ -172,6 +197,7 @@ namespace MizuEngine
                             });
                         maxId = Math.Max(maxId, id);
                     }
+                    _groupUnread = perGroup;
                     long newestRead = _groups.Max(g => ReadMark(g.Id));
                     _lastGroup = Math.Max(Math.Max(maxId, newestRead), Math.Max(0, _lastGroup));
                 }
@@ -182,6 +208,7 @@ namespace MizuEngine
                 // 3) Уведомления: не больше трёх за раз (после долгого перерыва не засыпаем экран карточками)
                 foreach (var m in fresh.Skip(Math.Max(0, fresh.Count - 3)))
                 {
+                    if (IsMuted(m.GroupId > 0 ? "g:" + m.GroupId : "u:" + m.FriendId)) continue;   // чат без уведомлений (0.11.6)
                     m.Sender = await Person(m.SenderId);
                     if (account != Supa.Me) return;
                     try { Arrived?.Invoke(m); } catch (Exception e) { Settings.Log(e); }

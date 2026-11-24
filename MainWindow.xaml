@@ -384,6 +384,142 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- 0.11.6, чаты: поле-«пилюля» (поиск по чатам, поле сообщения) -->
+        <Style x:Key="PillField" TargetType="TextBox">
+            <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource Text}"/>
+            <Setter Property="SelectionBrush" Value="{DynamicResource Accent}"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Padding" Value="20,0"/>
+            <Setter Property="MinHeight" Value="46"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Grid>
+                            <Border CornerRadius="23" Background="{DynamicResource CardBg}" BorderBrush="{DynamicResource CardRim}" BorderThickness="1"/>
+                            <Border CornerRadius="23" Background="{DynamicResource CardShine}" IsHitTestVisible="False"/>
+                            <Border x:Name="Focus" CornerRadius="23" BorderBrush="{DynamicResource Accent}" BorderThickness="1.5" Opacity="0"/>
+                            <!-- Отступ (Padding) поле ввода применяет само внутри PART_ContentHost, поэтому у ScrollViewer его нет —
+                                 иначе отступ удваивался и мигающая палочка стояла посреди подсказки. Подсказка начинается сразу за палочкой. -->
+                            <TextBlock x:Name="Ph" Text="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}" Margin="{TemplateBinding Padding}" Padding="3,0,0,0"
+                                       Foreground="{DynamicResource SubText}" Opacity="0.8" IsHitTestVisible="False" Visibility="Collapsed"
+                                       VerticalAlignment="Center" FontSize="{TemplateBinding FontSize}"/>
+                            <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Text" Value="">
+                                <Setter TargetName="Ph" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Focus" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.2"/>
+                                </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                                <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Focus" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.3"/>
+                                </Storyboard></BeginStoryboard></Trigger.ExitActions>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 0.11.6, чаты: круглая стеклянная кнопка (звонок, ⋮, скрепка, крестик) и «пилюля» с текстом -->
+        <Style x:Key="RoundGlass" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5">
+                            <Grid.RenderTransform><ScaleTransform/></Grid.RenderTransform>
+                            <Border CornerRadius="100" Background="{DynamicResource CardBg}" BorderBrush="{DynamicResource CardRim}" BorderThickness="1"/>
+                            <Border CornerRadius="100" Background="{DynamicResource CardShine}" IsHitTestVisible="False"/>
+                            <Border x:Name="Hover" CornerRadius="100" Background="{DynamicResource HoverBg}" Opacity="0"/>
+                            <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Hover" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.2"/>
+                                </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                                <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Hover" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.4"/>
+                                </Storyboard></BeginStoryboard></Trigger.ExitActions>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)" To="0.92" Duration="0:0:0.12" EasingFunction="{StaticResource Ease}"/>
+                                    <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)" To="0.92" Duration="0:0:0.12" EasingFunction="{StaticResource Ease}"/>
+                                </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                                <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)" To="1" Duration="0:0:0.45" EasingFunction="{StaticResource Spring}"/>
+                                    <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)" To="1" Duration="0:0:0.45" EasingFunction="{StaticResource Spring}"/>
+                                </Storyboard></BeginStoryboard></Trigger.ExitActions>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Root" Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 0.11.6, чаты: круглая кнопка цвета темы с бликом (отправить) -->
+        <Style x:Key="RoundAccent" TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5">
+                            <Grid.RenderTransform><ScaleTransform/></Grid.RenderTransform>
+                            <Border CornerRadius="100" Background="{DynamicResource Accent}"/>
+                            <Border CornerRadius="100" IsHitTestVisible="False" BorderBrush="#40FFFFFF" BorderThickness="1">
+                                <Border.Background>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                        <GradientStop Color="#55FFFFFF" Offset="0"/>
+                                        <GradientStop Color="#00FFFFFF" Offset="0.55"/>
+                                        <GradientStop Color="#30000040" Offset="1"/>
+                                    </LinearGradientBrush>
+                                </Border.Background>
+                            </Border>
+                            <Border x:Name="Hover" CornerRadius="100" Background="#26FFFFFF" Opacity="0"/>
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Hover" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.2"/>
+                                </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                                <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Hover" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.4"/>
+                                </Storyboard></BeginStoryboard></Trigger.ExitActions>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)" To="0.9" Duration="0:0:0.12" EasingFunction="{StaticResource Ease}"/>
+                                    <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)" To="0.9" Duration="0:0:0.12" EasingFunction="{StaticResource Ease}"/>
+                                </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                                <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)" To="1" Duration="0:0:0.45" EasingFunction="{StaticResource Spring}"/>
+                                    <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)" To="1" Duration="0:0:0.45" EasingFunction="{StaticResource Spring}"/>
+                                </Storyboard></BeginStoryboard></Trigger.ExitActions>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Root" Property="Opacity" Value="0.6"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="PassField" TargetType="PasswordBox">
             <Setter Property="Foreground" Value="{DynamicResource Text}"/>
             <Setter Property="CaretBrush" Value="{DynamicResource Text}"/>

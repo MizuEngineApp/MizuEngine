@@ -27,8 +27,10 @@ namespace MizuEngine
     internal sealed class WindowAnimator : Window
     {
         const double MinimizeTime = 0.46, RestoreTime = 0.40;   // секунд
-        const int HoldFrames = 2, FadeFrames = 3;   // без «плаща» DWM: картинка держится, пока окно дорисовывается (см. HoldTime), и быстро гаснет
-        const double HoldTime = 0.11;               // секунд — за это время почти любое окно успевает нарисоваться
+        const int HoldFrames = 2, FadeFrames = 5;   // картинка держится, пока окно дорисовывается (см. HoldTime), и мягко гаснет
+        // секунд — за это время почти любое окно успевает нарисоваться. Важно и после «плаща» DWM: браузеры, Telegram,
+        // Electron под плащом не рисуются, и в первые кадры после него окно белое/пустое (отсюда было мигание при разворачивании)
+        const double HoldTime = 0.16;
         const int Cols = 8, Rows = 96;               // сетка: 96 рядов дают гладкий изгиб без «ступенек»
 
         static readonly IntPtr TopMost = new IntPtr(-1);
@@ -56,6 +58,29 @@ namespace MizuEngine
 
         /// <summary>Анимация закончилась: окно, свернули ли его (true) или развернули, летело ли вверх (в Dynamic Island).</summary>
         public event Action<IntPtr, bool, bool> Finished;
+
+        // ---- Отладка: файл genie-debug-slow.flag рядом с exe — анимация в 12 раз медленнее и журнал genie.log рядом с exe ----
+        double _slow = 1;
+        static string DebugFile(string name) => System.IO.Path.Combine(AppContext.BaseDirectory, name);
+        void DbgShot(BitmapSource img, string name)
+        {
+            if (_slow <= 1 || img == null) return;
+            try
+            {
+                var enc = new PngBitmapEncoder();
+                enc.Frames.Add(BitmapFrame.Create(img));
+                using var f = System.IO.File.Create(DebugFile(name));
+                enc.Save(f);
+                Dbg($"saved {name} {img.PixelWidth}x{img.PixelHeight} {img.Format}");
+            }
+            catch (Exception e) { Dbg("png error " + e.Message); }
+        }
+
+        void Dbg(string text)
+        {
+            if (_slow <= 1) return;
+            try { System.IO.File.AppendAllText(DebugFile("genie.log"), $"{DateTime.Now:HH:mm:ss.fff} {text}\r\n"); } catch { }
+        }
 
         /// <summary>Окно, которое сейчас анимируется (события «свернули» от него не обрабатываем второй раз).</summary>
         public IntPtr Current => _target;
@@ -108,6 +133,7 @@ namespace MizuEngine
             };
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s, e) => Dispatcher.BeginInvoke(new Action(UpdateScreen));
             _safety.Tick += (s, e) => Abort();
+            _prepTimeout.Tick += (s, e) => CancelPrepared();
         }
 
         void UpdateScreen()
@@ -121,7 +147,7 @@ namespace MizuEngine
         /// <summary>Самопроверка (из Shell раз в 4 с): анимация идёт подозрительно долго — сбрасываем, окно не должно застрять.</summary>
         public void Unstick()
         {
-            if (_active && (DateTime.UtcNow - _beganAt).TotalSeconds > 4) Abort();
+            if (_active && (DateTime.UtcNow - _beganAt).TotalSeconds > 4 * _slow) Abort();
             if (!_active && _h != IntPtr.Zero && !IsVisible) { Show(); SetIdle(); }   // окно анимации кто-то спрятал — возвращаем
         }
 
@@ -167,6 +193,7 @@ namespace MizuEngine
             }
             _minimizing = true;
             _realDone = alreadyMinimized;
+            Dbg($"minimize already={alreadyMinimized}");
 
             BitmapSource shot = null;
             if (!Themes.SafeMode)
@@ -180,9 +207,15 @@ namespace MizuEngine
                     PoseThumb(0, 255);
                     SetVisible();
                     DwmFlush(); DwmFlush();   // два кадра: окно анимации переехало и миниатюра уже нарисована
-                    shot = Capture.Screen(frame, hwnd);
+                    // Снимаем НЕ экран (BitBlt): при HDR / автоуправлении цветом Windows отдаёт снимок экрана заметно
+                    // светлее — отсюда была «светлая вспышка». Просим DWM нарисовать наше окно анимации вместе с миниатюрой
+                    // (PrintWindow) — цвета один в один. Не получилось — без снимка: окно уйдёт живой миниатюрой.
+                    shot = Capture.Own(_h, new Native.RECT { Left = _bx, Top = _by, Right = _bx + _bw, Bottom = _by + _bh }, frame,
+                                       Rects.Maximized(hwnd) ? 0 : -1);
+                    Dbg($"own capture {(shot != null ? "ok" : "failed")}");
                 }
             }
+            DbgShot(shot, alreadyMinimized ? "genie-shot-screen.png" : "genie-shot-window.png");
             if (shot != null) Shots.Put(hwnd, shot, full, frame);
             else if (_thumb == IntPtr.Zero) ShowThumb(hwnd);   // снимка нет — запасной режим: живая миниатюра уменьшается в значок
             Start(shot);
@@ -206,10 +239,98 @@ namespace MizuEngine
             }
             _minimizing = false;
             _realDone = false;
+            Dbg($"restore shot={(shot != null)}");
             var img = shot == null || Themes.SafeMode ? null : shot.Image;   // сжатый снимок распаковывается здесь
             if (img == null) ShowThumb(hwnd);   // снимка нет — запасной режим: живая миниатюра «вырастает» из значка
             Start(img);
             Pose(1);
+        }
+
+        // ================== «_»: готовимся, пока кнопка зажата ==================
+        //
+        // Окно сворачивают кнопкой «_» — Windows убирает его сразу, а событие об этом приходит к нам чуть позже.
+        // Раньше в этот промежуток был виден рабочий стол (светлая вспышка), потом мы ещё снимали экран — отсюда
+        // и задержка. Теперь (Shell следит за мышью): нажали на «_» — снимаем окно и выкладываем точную копию
+        // в окно анимации (пока невидимое); отпустили — копия появляется ровно поверх окна, раньше, чем окно
+        // успевает исчезнуть; пришло событие «свернулось» — «джинн» стартует сразу, с первого кадра.
+
+        IntPtr _prepared;
+        bool _revealed;
+        Native.RECT _prepFrame;
+        readonly DispatcherTimer _prepTimeout = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(900) };
+
+        /// <summary>Окно, для которого копия уже готова (нажали «_»).</summary>
+        public IntPtr Prepared => _prepared;
+
+        /// <summary>Нажали «_» (кнопка ещё зажата): снимок окна и сетка в исходном положении, окно анимации пока пустое.</summary>
+        public void Prepare(IntPtr hwnd, Rect iconPx, bool up)
+        {
+            if (_active || Themes.SafeMode || hwnd == IntPtr.Zero || iconPx.IsEmpty) return;
+            if (System.IO.File.Exists(DebugFile("genie-debug-noprep.flag"))) return;   // отладка: проверить запасной путь
+            if (!Native.GetWindowRect(hwnd, out var full)) return;
+            if (Native.DwmGetWindowAttribute(hwnd, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out Native.RECT frame, Marshal.SizeOf<Native.RECT>()) != 0 || frame.Width <= 0) frame = full;
+            Rects.Learn(hwnd, full, frame);
+            if (!Begin(hwnd, full, frame, iconPx, up)) return;
+            var shot = Capture.Window(hwnd, full, frame);
+            // Пока снимали, окно уже свернулось (очень быстрый клик) или началась другая анимация — снимок не годится,
+            // сработает обычный путь (по событию «свернулось»)
+            if (_target != hwnd) return;
+            if (shot == null || Native.IsIconic(hwnd)) { Finish(); return; }
+            _minimizing = true;
+            _realDone = true;          // свернёт само окно — по нажатию «_»
+            _meshMode = true;
+            _brush.ImageSource = shot;
+            _brush.Opacity = 1;
+            _flat.Visibility = Visibility.Collapsed;
+            PoseMesh(0);               // WPF рисует сетку заранее, пока форма окна пустая
+            _prepared = hwnd;
+            _prepFrame = frame;
+            Dbg($"prepare {hwnd} frame {frame.Left},{frame.Top},{frame.Right},{frame.Bottom}");
+            _revealed = false;
+            _prepTimeout.Stop();
+            _prepTimeout.Start();      // кнопку так и не отпустили на «_» — через 0.9 с всё убираем
+        }
+
+        /// <summary>Кнопку отпустили на «_»: копия появляется поверх окна (одна в одну) — окно исчезнет уже под ней.</summary>
+        public void Reveal()
+        {
+            if (_prepared == IntPtr.Zero || _revealed) return;
+            _revealed = true;
+            SetVisible();
+            Dbg("reveal");
+            _prepTimeout.Stop();
+            _prepTimeout.Start();      // окно так и не свернулось (программа отменила) — копия уйдёт сама
+            Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(Shell.RaiseChrome));
+        }
+
+        /// <summary>Окно свернулось. true — копия была готова, «джинн» стартует сразу.</summary>
+        public bool Go(IntPtr hwnd)
+        {
+            if (_prepared == IntPtr.Zero || _prepared != hwnd) return false;
+            Dbg($"go revealed={_revealed}");
+            _prepTimeout.Stop();
+            _prepared = IntPtr.Zero;
+            if (!_revealed) SetVisible();
+            _revealed = false;
+            if (_brush.ImageSource is BitmapSource shot) Shots.Put(hwnd, shot, _full, _prepFrame);
+            Shell.RaiseChrome();
+            _phase = 1;                // подготовка уже была — сразу анимация
+            _t = 0;
+            _last = TimeSpan.Zero;
+            CompositionTarget.Rendering -= OnFrame;
+            CompositionTarget.Rendering += OnFrame;
+            _safety.Stop();
+            _safety.Interval = TimeSpan.FromSeconds(2.2 * _slow);
+            _safety.Start();
+            return true;
+        }
+
+        /// <summary>«_» не сработала (отпустили мимо, программа отменила) — убираем копию, окно не трогаем.</summary>
+        void CancelPrepared()
+        {
+            _prepTimeout.Stop();
+            if (_prepared == IntPtr.Zero) return;
+            Finish();
         }
 
         bool Begin(IntPtr hwnd, Native.RECT full, Native.RECT frame, Rect icon, bool up)
@@ -229,6 +350,7 @@ namespace MizuEngine
                 up = false;
             }
 
+            _slow = System.IO.File.Exists(DebugFile("genie-debug-slow.flag")) ? 12 : 1;
             _target = hwnd;
             _up = up;
             _full = full;
@@ -268,6 +390,7 @@ namespace MizuEngine
             CompositionTarget.Rendering -= OnFrame;
             CompositionTarget.Rendering += OnFrame;
             _safety.Stop();
+            _safety.Interval = TimeSpan.FromSeconds(2.2 * _slow);
             _safety.Start();
         }
 
@@ -298,8 +421,10 @@ namespace MizuEngine
                     _cloaked = true;
                     _realDone = true;
                     SetMinimized(_target, false);
+                    Dbg("restored under cloak");
                 }
                 _phase = 1;
+                Dbg($"phase1 mesh={_meshMode} cloaked={_cloaked}");
                 return;
             }
 
@@ -308,25 +433,30 @@ namespace MizuEngine
                 _settle++;
                 if (_cloaked)
                 {
-                    // Окно давно нарисовано под плащом: снимаем плащ, ждём кадр DWM и убираем картинку — подмена незаметна
-                    if (_settle == 1) { Cloak(_target, false); _cloaked = false; DwmFlush(); return; }
-                    Finish();
+                    // Снимаем плащ, но картинку окна держим поверх ещё HoldTime и гасим плавно (ниже): многие программы
+                    // начинают рисоваться только после плаща, и без этого на кадр-другой было видно пустое окно
+                    Cloak(_target, false);
+                    Dbg("uncloak");
+                    _cloaked = false;
+                    _settleAt = now;
+                    _settle = 1;
                     return;
                 }
                 // Без плаща: окно развернулось под точной (пиксель в пиксель) картинкой — держим её, пока окно дорисовывается
-                if ((now - _settleAt).TotalSeconds < HoldTime || _settle <= HoldFrames) return;
+                if ((now - _settleAt).TotalSeconds < HoldTime * _slow || _settle <= HoldFrames) return;
                 // Окно программы от администратора разворачивается само и чуть позже — держим картинку, пока оно не появится (до ~0.5 с)
                 if (Native.IsIconic(_target) && _wait < 30) { _wait++; return; }
                 if (_wait > 0 && _wait < 1000) { DockNative.SetForegroundWindow(_target); _wait = 1000; _settleAt = now; return; }
                 _fade++;
-                double a = 1 - (double)_fade / FadeFrames;
+                double a = 1 - (double)_fade / (FadeFrames * _slow);
+                if (_fade == 1) Dbg("fade start");
                 if (a <= 0) { Finish(); return; }
                 if (_meshMode) _flat.Opacity = a;
                 else PoseThumb(0, (byte)(255 * a));
                 return;
             }
 
-            _t = Math.Min(1, _t + dt / (_minimizing ? MinimizeTime : RestoreTime));
+            _t = Math.Min(1, _t + dt / ((_minimizing ? MinimizeTime : RestoreTime) * _slow));
             Pose(_minimizing ? EaseInOut(_t) : 1 - EaseOut(_t));
 
             if (_t >= 1)
@@ -340,6 +470,7 @@ namespace MizuEngine
                     return;
                 }
                 if (_meshMode) ShowFlat();   // последний кадр — точная картинка без сглаживания сетки
+                Dbg("restore anim end, flat shown");
                 if (!_cloaked) { _realDone = true; SetMinimized(hwnd, false); }
                 BringToFront(hwnd);
                 Shots.Drop(hwnd);
@@ -476,7 +607,11 @@ namespace MizuEngine
 
         void Finish()
         {
+            if (_active) Dbg("finish");
             _safety.Stop();
+            _prepTimeout.Stop();
+            _prepared = IntPtr.Zero;
+            _revealed = false;
             CompositionTarget.Rendering -= OnFrame;
             HideThumb();
             if (_cloaked && _target != IntPtr.Zero) Cloak(_target, false);   // окно ни в коем случае не должно остаться невидимым
@@ -765,11 +900,36 @@ namespace MizuEngine
                     if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return null;
                     int ox = frame.Left - full.Left, oy = frame.Top - full.Top, fw = frame.Width, fh = frame.Height;
                     if (ox < 0 || oy < 0 || ox + fw > w || oy + fh > h) { ox = oy = 0; fw = w; fh = h; }
-                    return Grab(w, h, (mem, screen, bits) =>
+                    // Окно не нарисовалось (некоторые игры и плееры) — снимка нет, анимация пойдёт живой миниатюрой DWM.
+                    // Снимок экрана (BitBlt) больше не берём: при HDR он светлее настоящего окна — была «вспышка».
+                    bool blank = false;
+                    var img = Grab(w, h, (mem, screen, bits) =>
                     {
-                        bool ok = PrintWindow(hwnd, mem, PW_RENDERFULLCONTENT);
-                        if (!ok || Blank(bits, w, ox, oy, fw, fh)) BitBlt(mem, ox, oy, fw, fh, screen, frame.Left, frame.Top, SRCCOPY);
+                        if (!PrintWindow(hwnd, mem, PW_RENDERFULLCONTENT) || Blank(bits, w, ox, oy, fw, fh)) blank = true;
                     }, ox, oy, fw, fh, Win11 && !Rects.Maximized(hwnd) ? Radius(hwnd) : 0);
+                    return blank ? null : img;
+                }
+                catch (Exception e) { Settings.Log(e); return null; }
+            }
+
+            /// <summary>
+            /// Часть нашего окна анимации (с живой миниатюрой DWM внутри) — через PrintWindow, без экрана.
+            /// radius: -1 — как у окон Windows 11, 0 — без скругления. Пусто (DWM не дорисовал миниатюру) — null.
+            /// </summary>
+            public static BitmapSource Own(IntPtr own, Native.RECT ownRect, Native.RECT frame, int radius)
+            {
+                try
+                {
+                    int w = ownRect.Width, h = ownRect.Height;
+                    if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return null;
+                    int ox = frame.Left - ownRect.Left, oy = frame.Top - ownRect.Top, fw = frame.Width, fh = frame.Height;
+                    if (ox < 0 || oy < 0 || ox + fw > w || oy + fh > h || fw <= 0 || fh <= 0) return null;
+                    bool blank = false;
+                    var img = Grab(w, h, (mem, screen, bits) =>
+                    {
+                        if (!PrintWindow(own, mem, PW_RENDERFULLCONTENT) || Blank(bits, w, ox, oy, fw, fh)) blank = true;
+                    }, ox, oy, fw, fh, radius < 0 ? (Win11 ? Radius(own) : 0) : radius);
+                    return blank ? null : img;
                 }
                 catch (Exception e) { Settings.Log(e); return null; }
             }

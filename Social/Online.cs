@@ -84,6 +84,14 @@ namespace MizuEngine
             return g;
         }
 
+        /// <summary>Отдельный кружок статуса (строка «Статус» в панели чата, 0.11.6): зелёный — в сети, серый — нет.</summary>
+        public static Ellipse Dot(string userId, double size = 10)
+        {
+            var dot = new Ellipse { Width = size, Height = size, Visibility = Visibility.Collapsed, IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Center };
+            if (!string.IsNullOrEmpty(userId)) Watch(userId, dot, null);
+            return dot;
+        }
+
         /// <summary>Надпись «в сети» или «был(а) в сети 5 мин назад» (для шапки чата и профиля).</summary>
         public static TextBlock Status(string userId, double fontSize = 12)
         {

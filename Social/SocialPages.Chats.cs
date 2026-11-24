@@ -9,6 +9,8 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Ellipse = System.Windows.Shapes.Ellipse;
+using Shape = System.Windows.Shapes.Shape;
 
 namespace MizuEngine
 {
@@ -34,6 +36,45 @@ namespace MizuEngine
         readonly Dictionary<long, TextBlock> _unreadTicks = new Dictionary<long, TextBlock>();
 
         bool IsStaff => SocialApi.MyProfile?.CanPost == true;
+
+        DateTime _feedDay;                                // день последнего сообщения в ленте (плашки «Сегодня», «Вчера», дата)
+        TextBox _inputBox;                                // поле сообщения открытой переписки («Отправить сообщение» в панели справа)
+
+        /// <summary>Плашка дня по центру ленты (как на макете): «Сегодня», «Вчера» или дата.</summary>
+        void DayMark(Panel feed, DateTime when, bool animate)
+        {
+            if (feed == null || when == default || when.Date == _feedDay) return;
+            _feedDay = when.Date;
+            var g = new Grid { Margin = new Thickness(0, 10, 0, 10) };
+            g.ColumnDefinitions.Add(new ColumnDefinition());
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            g.ColumnDefinitions.Add(new ColumnDefinition());
+            Border Line(bool leftSide)
+            {
+                var c = (UI.Owner.TryFindResource("Divider") as SolidColorBrush)?.Color ?? Color.FromArgb(0x30, 255, 255, 255);
+                var c0 = Color.FromArgb(0, c.R, c.G, c.B);
+                var c1 = Color.FromArgb((byte)Math.Min(255, c.A * 2), c.R, c.G, c.B);
+                return new Border
+                {
+                    Height = 1, VerticalAlignment = VerticalAlignment.Center, Margin = leftSide ? new Thickness(40, 0, 12, 0) : new Thickness(12, 0, 40, 0),
+                    Background = new LinearGradientBrush(leftSide ? c0 : c1, leftSide ? c1 : c0, 0)
+                };
+            }
+            g.Children.Add(Line(true));
+            var today = DateTime.Now.Date;
+            string text = when.Date == today ? Loc.T("chats.today") : when.Date == today.AddDays(-1) ? Loc.T("chats.yesterday")
+                : when.ToString(when.Year == today.Year ? "d MMMM" : "d MMMM yyyy", Loc.Culture);
+            var pill = new Border { CornerRadius = new CornerRadius(16), BorderThickness = new Thickness(1), Padding = new Thickness(18, 6, 18, 7), Child = UI.T(text, 12.5, true) };
+            pill.SetResourceReference(Border.BackgroundProperty, "CardBg");
+            pill.SetResourceReference(Border.BorderBrushProperty, "CardRim");
+            Grid.SetColumn(pill, 1);
+            g.Children.Add(pill);
+            var right = Line(false);
+            Grid.SetColumn(right, 2);
+            g.Children.Add(right);
+            feed.Children.Add(g);
+            if (!Motion.Off) Anim.To(g, UIElement.OpacityProperty, 1, Motion.Ms(animate ? 300 : 260), from: 0);
+        }
 
         // Тема открытого чата: фон и цвет своих сообщений (видят все участники)
         ChatTheme _theme = new ChatTheme();
@@ -101,38 +142,77 @@ namespace MizuEngine
                 return;
             }
 
-            var grid = new Grid();
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(290) });
+            // 0.11.6: три колонки, как в макете rainy — список чатов, переписка, профиль собеседника (или группы).
+            // Панель справа открывается и закрывается с анимацией; когда её нет, переписка плавно занимает место.
+            var grid = new Grid { Margin = new Thickness(0, 0, 14, 0) };
+            _listCol = new ColumnDefinition { Width = new GridLength(ListWide) };
+            grid.ColumnDefinitions.Add(_listCol);
             grid.ColumnDefinitions.Add(new ColumnDefinition());
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            var left = new DockPanel { Margin = new Thickness(0, 0, 18, 0) };
-            var top = new Grid();
-            top.Children.Add(UI.H1("nav.chats"));
+            // ----- левая колонка: «Чаты», поиск, разделы -----
+            var leftCard = Pane();
+            leftCard.Margin = new Thickness(0, 0, 12, 0);
+            var left = new DockPanel { Margin = new Thickness(16, 18, 10, 6) };
+            leftCard.Child = left;
+
+            var top = new DockPanel { Margin = new Thickness(6, 0, 6, 0), LastChildFill = true };
+            var tools = UI.Row();
+            tools.VerticalAlignment = VerticalAlignment.Center;
             if (IsStaff)
             {
-                var create = UI.Glass("", "groups.create", (s, e) => ShowCreateGroup(), 7);
-                create.HorizontalAlignment = HorizontalAlignment.Right;
-                create.VerticalAlignment = VerticalAlignment.Center;
-                create.Margin = new Thickness(0, 0, 44, 0);
-                top.Children.Add(create);
+                var create = RoundPill("", "groups.create", () => ShowCreateGroup());
+                create.Margin = new Thickness(0, 0, 8, 0);
+                create.ToolTip = Loc.T("groups.new");
+                tools.Children.Add(create);
+                _createLabel = ((StackPanel)create.Content).Children[1] as FrameworkElement;
+                _createBtn = create;
             }
+            else _createLabel = _createBtn = null;
             // Звуки сообщений и уведомления — открывают свой раздел в «Настройках»
-            var sounds = UI.Glass("\uE767", null, (s, e) => _navigate("sounds"), 7);
+            var sounds = RoundIcon("", 40, () => _navigate("sounds"), accent: true);
             sounds.ToolTip = Loc.T("chats.sounds");
-            sounds.HorizontalAlignment = HorizontalAlignment.Right;
-            sounds.VerticalAlignment = VerticalAlignment.Center;
-            top.Children.Add(sounds);
+            tools.Children.Add(sounds);
+            DockPanel.SetDock(tools, Dock.Right);
+            top.Children.Add(tools);
+            var title = UI.L("nav.chats", 30, true);
+            title.VerticalAlignment = VerticalAlignment.Center;
+            title.TextTrimming = TextTrimming.CharacterEllipsis;
+            top.Children.Add(title);
             DockPanel.SetDock(top, Dock.Top);
             left.Children.Add(top);
-            var list = new StackPanel { Margin = new Thickness(0, 10, 8, 0) };
-            left.Children.Add(UI.Scroll(list));
-            grid.Children.Add(left);
 
-            _chatPanel = new Border { CornerRadius = new CornerRadius(22), BorderThickness = new Thickness(1), ClipToBounds = true };
-            _chatPanel.SetResourceReference(Border.BackgroundProperty, "CardBg");
-            _chatPanel.SetResourceReference(Border.BorderBrushProperty, "CardRim");
+            // Поиск по чатам: фильтрует строки на лету (по нику и @юзу)
+            var search = new TextBox { Style = (Style)UI.Owner.FindResource("PillField"), MaxLength = 40, Padding = new Thickness(46, 0, 16, 0), Margin = new Thickness(0, 18, 6, 4) };
+            search.SetResourceReference(FrameworkElement.TagProperty, "chats.search");
+            var searchIcon = UI.Icon("", 16);
+            searchIcon.SetResourceReference(TextBlock.ForegroundProperty, "SubText");
+            searchIcon.HorizontalAlignment = HorizontalAlignment.Left;
+            searchIcon.Margin = new Thickness(18, 18, 0, 4);
+            searchIcon.IsHitTestVisible = false;
+            var searchBox = new Grid();
+            searchBox.Children.Add(search);
+            searchBox.Children.Add(searchIcon);
+            DockPanel.SetDock(searchBox, Dock.Top);
+            left.Children.Add(searchBox);
+
+            var list = new StackPanel { Margin = new Thickness(0, 8, 6, 8) };
+            left.Children.Add(UI.Scroll(list));
+            grid.Children.Add(leftCard);
+
+            // ----- середина: переписка -----
+            _chatPanel = Pane();
             Grid.SetColumn(_chatPanel, 1);
             grid.Children.Add(_chatPanel);
+
+            // ----- справа: профиль собеседника / группы -----
+            _infoInner = new Border { Width = InfoWide, HorizontalAlignment = HorizontalAlignment.Right, RenderTransform = new TranslateTransform() };
+            _infoHost = new Border { Width = 0, ClipToBounds = true, Child = _infoInner, Opacity = 0 };
+            _infoShown = false;
+            _infoKey = null;
+            Grid.SetColumn(_infoHost, 2);
+            grid.Children.Add(_infoHost);
+            grid.SizeChanged += (s, e) => FitColumns(e.NewSize.Width);
             Motion.Replace(_chatsHost, grid);
 
             list.Children.Add(UI.Loading());
@@ -151,59 +231,439 @@ namespace MizuEngine
             var requests = others.Where(p => _requestIds.Contains(p.Id)).ToList();
             others = others.Where(p => !_requestIds.Contains(p.Id)).ToList();
             list.Children.Clear();
+            _rowSelect.Clear();
+            var sections = new List<(FrameworkElement head, Panel rows, Action<bool> force)>();
 
             // «Запросы» (0.11.5): незнакомые, которые написали первыми, — отдельно, пока не примешь или не ответишь
             if (requests.Count > 0)
             {
-                var reqTitle = UI.Section("chats.requests", 0);
-                list.Children.Add(reqTitle);
+                var (head, rows, force) = ListSection("chats.requests", "requests");
                 var reqHint = UI.L("chats.requests.d", 12, sub: true, wrap: true);
-                reqHint.Margin = new Thickness(4, 0, 0, 6);
-                list.Children.Add(reqHint);
+                reqHint.Margin = new Thickness(6, 0, 0, 8);
+                rows.Children.Add(reqHint);
                 foreach (var f in requests)
                 {
                     var fr = f;
                     _people[f.Id] = f;
-                    var trailing = new List<UIElement>();
-                    if (unread.TryGetValue(f.Id, out int n)) trailing.Add(UnreadDot(n));
-                    list.Children.Add(UI.UserRow(fr, () => OpenChat(fr), trailing.ToArray()));
+                    rows.Children.Add(ChatRow(fr, "@" + fr.Handle, "u:" + fr.Id, unread.TryGetValue(f.Id, out int n) ? n : 0, () => OpenChat(fr)));
                 }
+                list.Children.Add(head);
+                list.Children.Add(rows);
+                sections.Add((head, rows, force));
             }
 
             if (groups.Count > 0)
             {
-                list.Children.Add(UI.Section("groups.title", requests.Count > 0 ? 14 : 0));
+                var (head, rows, force) = ListSection("groups.title", "groups");
                 _groupRows.Clear();
                 foreach (var g in groups)
                 {
                     // Строка группы в своём «слоте», чтобы после смены аватарки или галочки обновить её на месте
                     var slot = new ContentControl { Content = GroupRow(g), Focusable = false };
                     _groupRows[g.Id] = slot;
-                    list.Children.Add(slot);
+                    rows.Children.Add(slot);
                 }
+                list.Children.Add(head);
+                list.Children.Add(rows);
+                sections.Add((head, rows, force));
             }
 
-            list.Children.Add(UI.Section("chats.personal", groups.Count > 0 || requests.Count > 0 ? 14 : 0));
-            if (friends.Count == 0 && others.Count == 0) list.Children.Add(Empty("chats.no_friends"));
-            foreach (var f in others.Concat(friends))
             {
-                var fr = f;
-                _people[f.Id] = f;
-                var trailing = new List<UIElement>();
-                if (unread.TryGetValue(f.Id, out int n)) trailing.Add(UnreadDot(n));
-                list.Children.Add(UI.UserRow(fr, () => OpenChat(fr), trailing.ToArray()));
+                var (head, rows, force) = ListSection("chats.personal", "personal");
+                if (friends.Count == 0 && others.Count == 0) rows.Children.Add(Empty("chats.no_friends"));
+                foreach (var f in others.Concat(friends))
+                {
+                    var fr = f;
+                    _people[f.Id] = f;
+                    rows.Children.Add(ChatRow(fr, string.IsNullOrEmpty(fr.Handle) ? "" : "@" + fr.Handle, "u:" + fr.Id, unread.TryGetValue(f.Id, out int n) ? n : 0, () => OpenChat(fr)));
+                }
+                list.Children.Add(head);
+                list.Children.Add(rows);
+                sections.Add((head, rows, force));
             }
             Motion.Stagger(list);
+
+            // Поиск: прячем строки, которые не подходят, и разделы, где ничего не осталось
+            search.TextChanged += (s, e) =>
+            {
+                string q = search.Text.Trim().TrimStart('@').ToLowerInvariant();
+                foreach (var (head, rows, force) in sections)
+                {
+                    int shown = 0;
+                    foreach (FrameworkElement row in rows.Children)
+                    {
+                        var target = row is ContentControl cc ? cc.Content as FrameworkElement : row;
+                        if (target?.Tag is not string text) { row.Visibility = q.Length == 0 ? Visibility.Visible : Visibility.Collapsed; continue; }
+                        bool ok = q.Length == 0 || text.Contains(q);
+                        row.Visibility = ok ? Visibility.Visible : Visibility.Collapsed;
+                        if (ok) shown++;
+                    }
+                    force(q.Length > 0);
+                    head.Visibility = q.Length > 0 && shown == 0 ? Visibility.Collapsed : Visibility.Visible;
+                    rows.Visibility = head.Visibility;
+                }
+            };
 
             if (_groupOpen > 0 && groups.FirstOrDefault(x => x.Id == _groupOpen) is Group open) OpenGroup(open);
             else if (_chatWith != null && _people.TryGetValue(_chatWith, out var who)) OpenChat(who);
             else ShowChatHint();
         }
 
+        // ================== 0.11.6: колонки, строки списка, кнопки ==================
+
+        const double ListWide = 300, ListNarrow = 252, InfoWide = 300, InfoNarrow = 262;
+        ColumnDefinition _listCol;
+        FrameworkElement _createLabel;
+        Button _createBtn;
+        Border _infoHost, _infoInner;
+        bool _infoShown, _narrow;
+        string _infoKey;                                  // чей профиль сейчас в панели справа ("u:…"/"g:…" + состояние)
+
+        /// <summary>Подстраиваем ширину колонок под окно. Совсем узко — панель справа прячется сама (настройка не меняется).</summary>
+        void FitColumns(double w)
+        {
+            if (_listCol == null || w <= 0) return;
+            _listCol.Width = new GridLength(w < 980 ? ListNarrow : ListWide);
+            // Узкий список: у «+ Группа» остаётся только «+», чтобы заголовок «Чаты» не обрезался
+            if (_createLabel != null)
+            {
+                bool slim = w < 980;
+                _createLabel.Visibility = slim ? Visibility.Collapsed : Visibility.Visible;
+                _createBtn.Padding = slim ? new Thickness(0) : new Thickness(16, 0, 18, 0);
+                _createBtn.Width = slim ? 40 : double.NaN;
+            }
+            double info = w < 1120 ? InfoNarrow : InfoWide;
+            if (_infoInner != null && Math.Abs(_infoInner.Width - info) > 0.5)
+            {
+                _infoInner.Width = info;
+                if (_infoShown) Anim.Set(_infoHost, FrameworkElement.WidthProperty, info + 12);
+            }
+            bool narrow = w < 820;
+            if (narrow == _narrow) return;
+            _narrow = narrow;
+            UpdateInfo(true);
+        }
+
+        /// <summary>Хочет ли человек видеть панель справа (по умолчанию — да; запоминается).</summary>
+        static bool InfoWanted
+        {
+            get => Inbox.Prefs?.ChatInfoOpen ?? true;
+            set { var s = Inbox.Prefs; if (s == null || s.ChatInfoOpen == value) return; s.ChatInfoOpen = value; s.Save(); }
+        }
+
+        /// <summary>Показать или спрятать панель справа: ширина плавно растёт/сжимается, содержимое выезжает и проявляется.</summary>
+        void UpdateInfo(bool animate)
+        {
+            if (_infoHost == null) return;
+            bool show = InfoWanted && !_narrow && _infoKey != null;
+            if (show == _infoShown && animate) return;
+            _infoShown = show;
+            double to = show ? _infoInner.Width + 12 : 0;
+            var move = (TranslateTransform)_infoInner.RenderTransform;
+            if (!animate || Motion.Off)
+            {
+                Anim.Set(_infoHost, FrameworkElement.WidthProperty, to);
+                Anim.Set(_infoHost, UIElement.OpacityProperty, show ? 1 : 0);
+                Anim.Set(move, TranslateTransform.XProperty, 0);
+                return;
+            }
+            double ms = Motion.Ms(show ? 460 : 380);
+            Anim.To(_infoHost, FrameworkElement.WidthProperty, to, ms);
+            Anim.To(_infoHost, UIElement.OpacityProperty, show ? 1 : 0, Motion.Ms(show ? 320 : 240), delayMs: show ? Motion.Ms(60) : 0);
+            if (show) Anim.To(move, TranslateTransform.XProperty, 0, ms, from: 36, ease: Anim.Spring);
+            else Anim.To(move, TranslateTransform.XProperty, 30, ms);
+        }
+
+        /// <summary>Крестик в панели / пункт «Профиль» в меню ⋮ / клик по шапке переписки.</summary>
+        void ToggleInfo(bool? open = null)
+        {
+            bool want = open ?? !_infoShown;
+            InfoWanted = want;
+            UpdateInfo(true);
+        }
+
+        /// <summary>
+        /// Ник и значки сразу за ним; длинный ник обрезается «…», а значки остаются видны.
+        /// (Grid прижат влево/по центру: «звёздная» колонка получает ровно ширину текста или остаток места.)
+        /// </summary>
+        static Grid NameWithBadges(TextBlock name, HorizontalAlignment align, params FrameworkElement[] after)
+        {
+            var g = new Grid { HorizontalAlignment = align };
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            name.TextTrimming = TextTrimming.CharacterEllipsis;
+            name.VerticalAlignment = VerticalAlignment.Center;
+            g.Children.Add(name);
+            int col = 1;
+            foreach (var a in after)
+            {
+                if (a == null) continue;
+                g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                a.VerticalAlignment = VerticalAlignment.Center;
+                Grid.SetColumn(a, col++);
+                g.Children.Add(a);
+            }
+            return g;
+        }
+
+        /// <summary>Стеклянная карточка-колонка со скруглением, как на макете.</summary>
+        static Border Pane()
+        {
+            var b = new Border { CornerRadius = new CornerRadius(24), BorderThickness = new Thickness(1), ClipToBounds = true };
+            b.SetResourceReference(Border.BackgroundProperty, "CardBg");
+            b.SetResourceReference(Border.BorderBrushProperty, "CardRim");
+            return b;
+        }
+
+        /// <summary>Круглая стеклянная кнопка со значком.</summary>
+        static Button RoundIcon(string glyph, double size, Action click, bool accent = false, double iconSize = 0)
+        {
+            var icon = UI.Icon(glyph, iconSize > 0 ? iconSize : Math.Round(size * 0.38), accent);
+            var b = new Button { Style = (Style)UI.Owner.FindResource("RoundGlass"), Width = size, Height = size, Content = icon };
+            if (click != null) b.Click += (s, e) => click();
+            return b;
+        }
+
+        /// <summary>Стеклянная «пилюля» со значком и текстом («+ Группа», «Открыть профиль»).</summary>
+        static Button RoundPill(string glyph, string key, Action click, double height = 40)
+        {
+            var sp = new StackPanel { Orientation = Orientation.Horizontal };
+            if (glyph != null) sp.Children.Add(UI.Icon(glyph, 14, accent: true));
+            var t = UI.L(key, 13.5, true);
+            t.VerticalAlignment = VerticalAlignment.Center;
+            t.Margin = new Thickness(glyph != null ? 8 : 0, 0, 0, 1);
+            sp.Children.Add(t);
+            var b = new Button { Style = (Style)UI.Owner.FindResource("RoundGlass"), Height = height, Padding = new Thickness(16, 0, 18, 0), Content = sp };
+            if (click != null) b.Click += (s, e) => click();
+            return b;
+        }
+
+        /// <summary>Заголовок раздела «⌄ Группы ⌄»: нажал — раздел плавно сворачивается (запоминается до перезапуска).</summary>
+        static readonly HashSet<string> CollapsedSections = new HashSet<string>();
+
+        (FrameworkElement head, Panel rows, Action<bool> force) ListSection(string key, string id)
+        {
+            var rows = new StackPanel { LayoutTransform = new ScaleTransform(1, 1) };
+            var chevron = UI.Icon("", 10);
+            chevron.SetResourceReference(TextBlock.ForegroundProperty, "SubText");
+            chevron.RenderTransformOrigin = new Point(0.5, 0.5);
+            chevron.RenderTransform = new RotateTransform();
+            var label = UI.L(key, 14, true);
+            label.Margin = new Thickness(8, 0, 6, 1);
+            var tail = UI.Icon("", 8.5);
+            tail.SetResourceReference(TextBlock.ForegroundProperty, "SubText");
+            tail.Margin = new Thickness(0, 2, 0, 0);
+            var head = UI.Row(chevron, label, tail);
+            head.Margin = new Thickness(6, 10, 0, 10);
+            head.Background = Brushes.Transparent;
+            head.HorizontalAlignment = HorizontalAlignment.Left;
+            UI.Hand(head);
+
+            bool forced = false;
+            void Paint(bool animate)
+            {
+                bool closed = CollapsedSections.Contains(id) && !forced;
+                var scale = (ScaleTransform)rows.LayoutTransform;
+                var rot = (RotateTransform)chevron.RenderTransform;
+                double ms = animate && !Motion.Off ? Motion.Ms(320) : 1;
+                Anim.To(rot, RotateTransform.AngleProperty, closed ? -90 : 0, ms);
+                if (closed)
+                {
+                    Anim.To(rows, UIElement.OpacityProperty, 0, ms * 0.7);
+                    Anim.To(scale, ScaleTransform.ScaleYProperty, 0.001, ms, done: () => { if (CollapsedSections.Contains(id) && !forced) rows.IsHitTestVisible = false; });
+                }
+                else
+                {
+                    rows.IsHitTestVisible = true;
+                    Anim.To(scale, ScaleTransform.ScaleYProperty, 1, ms);
+                    Anim.To(rows, UIElement.OpacityProperty, 1, ms, delayMs: animate ? Motion.Ms(60) : 0);
+                }
+            }
+            head.MouseLeftButtonUp += (s, e) =>
+            {
+                if (forced) return;
+                if (!CollapsedSections.Remove(id)) CollapsedSections.Add(id);
+                Paint(true);
+            };
+            Paint(false);
+            return (head, rows, on => { if (forced == on) return; forced = on; Paint(true); });
+        }
+
+        /// <summary>Выбранная строка слева подсвечивается цветом темы: ключ чата → «подсветить / погасить».</summary>
+        readonly Dictionary<string, Action<bool>> _rowSelect = new Dictionary<string, Action<bool>>();
+        string _selectedKey;
+
+        void SelectRow(string key)
+        {
+            if (_selectedKey != null && _rowSelect.TryGetValue(_selectedKey, out var off)) off(false);
+            _selectedKey = key;
+            if (key != null && _rowSelect.TryGetValue(key, out var on)) on(true);
+        }
+
+        /// <summary>
+        /// Строка чата слева (макет 0.11.6): «пилюля» с аватаркой, ником, галочкой и @юзом; синяя точка — непрочитанные;
+        /// «⋯» — быстрое меню. Выбранный чат подсвечен цветом темы.
+        /// </summary>
+        FrameworkElement ChatRow(Profile p, string subtitle, string key, int unread, Action open)
+        {
+            const double R = 20;
+            var root = new Grid { Margin = new Thickness(0, 0, 0, 8), Cursor = Cursors.Hand, Background = Brushes.Transparent };
+            root.Tag = ((p.Nickname ?? "") + " " + (p.Handle ?? "")).ToLowerInvariant();   // для поиска
+
+            var baseBg = new Border { CornerRadius = new CornerRadius(R), BorderThickness = new Thickness(1) };
+            baseBg.SetResourceReference(Border.BackgroundProperty, "CardBg");
+            baseBg.SetResourceReference(Border.BorderBrushProperty, "CardRim");
+            root.Children.Add(baseBg);
+
+            // Подсветка выбранной строки: цвет темы + блик + яркая кромка
+            var sel = new Grid { Opacity = 0, IsHitTestVisible = false };
+            var selFill = new Border { CornerRadius = new CornerRadius(R), Opacity = 0.42 };
+            selFill.SetResourceReference(Border.BackgroundProperty, "Accent");
+            sel.Children.Add(selFill);
+            sel.Children.Add(new Border
+            {
+                CornerRadius = new CornerRadius(R),
+                Background = new LinearGradientBrush(Color.FromArgb(0x38, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), new Point(0, 0), new Point(0.6, 1))
+            });
+            var selRim = new Border { CornerRadius = new CornerRadius(R), BorderThickness = new Thickness(1.4) };
+            selRim.SetResourceReference(Border.BorderBrushProperty, "Accent");
+            sel.Children.Add(selRim);
+            root.Children.Add(sel);
+
+            var hover = new Border { CornerRadius = new CornerRadius(R), Opacity = 0, IsHitTestVisible = false };
+            hover.SetResourceReference(Border.BackgroundProperty, "HoverBg");
+            root.Children.Add(hover);
+
+            var grid = new Grid { Margin = new Thickness(12, 10, 10, 10) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition());
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            bool person = p.Id != null && !p.Id.StartsWith("group:") && !p.Bot;
+            grid.Children.Add(person ? Online.WithDot(UI.Avatar(p, 50), p.Id, 50) : UI.Avatar(p, 50));
+
+            var name = NameWithBadges(UI.T(p.Nickname, 15.5, true), HorizontalAlignment.Left,
+                p.Verified ? Pad(UI.Badge(17, p.Badge), 6) : null, p.IsPlus ? UI.PlusAfter(17) : null);
+            var info = new StackPanel { Margin = new Thickness(13, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+            info.Children.Add(name);
+            if (!string.IsNullOrEmpty(subtitle))
+            {
+                var sub = UI.T(subtitle, 13, sub: true);
+                sub.TextTrimming = TextTrimming.CharacterEllipsis;
+                sub.Margin = new Thickness(0, 2, 0, 0);
+                info.Children.Add(sub);
+            }
+            Grid.SetColumn(info, 1);
+            grid.Children.Add(info);
+
+            // Справа: «⋯» (у выбранной строки и при наведении) и синяя точка непрочитанных
+            var right = new Grid { VerticalAlignment = VerticalAlignment.Center };
+            Grid.SetColumn(right, 2);
+            grid.Children.Add(right);
+            var dot = UnreadDot(unread);
+            right.Children.Add(dot);
+            var more = RoundIcon("", 30, null, iconSize: 13);
+            more.Opacity = 0;
+            more.IsHitTestVisible = false;
+            more.ToolTip = Loc.T("chats.more");
+            more.Click += (s, e) => RowMenu(more, p, key);
+            right.Children.Add(more);
+            root.Children.Add(grid);
+
+            bool selected = false;
+            void Paint()
+            {
+                bool showMore = selected || root.IsMouseOver;
+                Anim.To(more, UIElement.OpacityProperty, showMore ? 1 : 0, Motion.Ms(showMore ? 180 : 260));
+                more.IsHitTestVisible = showMore;
+                if (unread > 0) Anim.To(dot, UIElement.OpacityProperty, showMore ? 0 : 1, Motion.Ms(200));
+            }
+            root.MouseEnter += (s, e) => { Anim.To(hover, UIElement.OpacityProperty, selected ? 0.4 : 1, 160); Paint(); };
+            root.MouseLeave += (s, e) => { Anim.To(hover, UIElement.OpacityProperty, 0, 320); Paint(); };
+            root.MouseLeftButtonUp += (s, e) =>
+            {
+                if (more.IsMouseOver) return;
+                Motion.Pop(root, 0.985);
+                if (unread > 0) { unread = 0; dot.IsHitTestVisible = false; Anim.To(dot, UIElement.OpacityProperty, 0, Motion.Ms(240)); }   // прочитано
+                open();
+            };
+            _rowSelect[key] = on =>
+            {
+                if (selected == on) return;
+                selected = on;
+                Anim.To(sel, UIElement.OpacityProperty, on ? 1 : 0, Motion.Ms(on ? 260 : 360));
+                Paint();
+            };
+            if (key == _selectedKey) { selected = true; sel.Opacity = 1; Paint(); }
+            return root;
+        }
+
+        /// <summary>Меню «⋯» у строки: уведомления, профиль.</summary>
+        void RowMenu(FrameworkElement anchor, Profile p, string key)
+        {
+            bool muted = Inbox.IsMuted(key);
+            var items = new List<(string key, string glyph, Action act)>
+            {
+                (muted ? "chats.notify_on" : "chats.notify_off", muted ? "" : "", () => { Inbox.SetMuted(key, !muted); _toast(Loc.T(muted ? "chats.notify_on.done" : "chats.notify_off.done")); RefreshInfo(); })
+            };
+            if (key.StartsWith("u:")) items.Add(("chats.open_profile", "", () => _ = OpenProfile(p)));
+            ShowMenu(anchor, items.ToArray());
+        }
+
+        /// <summary>Выпадающее меню в стиле приложения (стекло в цветах темы) со значками; красные — опасные действия.</summary>
+        static void ShowMenu(FrameworkElement anchor, params (string key, string glyph, Action act)[] items)
+        {
+            var popup = new System.Windows.Controls.Primitives.Popup
+            {
+                PlacementTarget = anchor, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom,
+                StaysOpen = false, AllowsTransparency = true, PopupAnimation = System.Windows.Controls.Primitives.PopupAnimation.Fade,
+                VerticalOffset = 2, HorizontalOffset = -12
+            };
+            var list = new StackPanel { Margin = new Thickness(6) };
+            foreach (var (key, glyph, act) in items)
+            {
+                var a = act;
+                bool danger = key == "groups.leave" || key == "groups.delete";
+                var row = new Grid { Background = Brushes.Transparent, Cursor = Cursors.Hand, MinHeight = 38 };
+                var hover = new Border { CornerRadius = new CornerRadius(10), Opacity = 0 };
+                hover.SetResourceReference(Border.BackgroundProperty, "HoverBg");
+                row.Children.Add(hover);
+                var icon = UI.Icon(glyph ?? "", 14, accent: !danger);
+                icon.Width = 18;
+                var text = UI.T(Loc.T(key), 13.5, true);
+                text.Margin = new Thickness(10, 0, 0, 1);
+                text.VerticalAlignment = VerticalAlignment.Center;
+                if (danger) { icon.Foreground = DangerBrush; text.Foreground = DangerBrush; }
+                var content = UI.Row(icon, text);
+                content.Margin = new Thickness(12, 0, 16, 0);
+                content.VerticalAlignment = VerticalAlignment.Center;
+                row.Children.Add(content);
+                row.MouseEnter += (s, e) => Anim.To(hover, UIElement.OpacityProperty, 1, 140);
+                row.MouseLeave += (s, e) => Anim.To(hover, UIElement.OpacityProperty, 0, 260);
+                row.MouseLeftButtonUp += (s, e) => { popup.IsOpen = false; a(); };
+                list.Children.Add(row);
+            }
+            var layers = new Grid();
+            var back = new Border { CornerRadius = new CornerRadius(16) };
+            back.SetResourceReference(Border.BackgroundProperty, "WinBg");
+            var glass = new Border { CornerRadius = new CornerRadius(16), BorderThickness = new Thickness(1) };
+            glass.SetResourceReference(Border.BackgroundProperty, "CardBg");
+            glass.SetResourceReference(Border.BorderBrushProperty, "CardRim");
+            layers.Children.Add(back);
+            layers.Children.Add(glass);
+            layers.Children.Add(list);
+            var card = new Border
+            {
+                Child = layers, MinWidth = 220, Margin = new Thickness(12, 4, 12, 16),
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 22, ShadowDepth = 6, Direction = 270, Opacity = 0.35, Color = Colors.Black }
+            };
+            popup.Child = card;
+            popup.IsOpen = true;
+        }
+
         readonly Dictionary<long, ContentControl> _groupRows = new Dictionary<long, ContentControl>();
 
         /// <summary>Строка группы слева: аватарка, название, галочка и @юз — как в шапке открытой группы.</summary>
-        Button GroupRow(Group g) => UI.UserRow(g.Look(), () => OpenGroup(g), string.IsNullOrEmpty(g.Handle) ? Loc.T("groups.subtitle") : "@" + g.Handle);
+        FrameworkElement GroupRow(Group g) =>
+            ChatRow(g.Look(), string.IsNullOrEmpty(g.Handle) ? Loc.T("groups.subtitle") : "@" + g.Handle, "g:" + g.Id, Inbox.GroupUnread(g.Id), () => OpenGroup(g));
 
         /// <summary>Перерисовать строку группы в списке слева (после смены аватарки или галочки).</summary>
         void RefreshGroupRow(Group g)
@@ -211,22 +671,41 @@ namespace MizuEngine
             if (_groupRows.TryGetValue(g.Id, out var slot)) slot.Content = GroupRow(g);
         }
 
+        /// <summary>Непрочитанные: синяя точка со свечением, как на макете (число — в подсказке).</summary>
         static FrameworkElement UnreadDot(int n)
         {
-            var dot = new Border { CornerRadius = new CornerRadius(10), MinWidth = 20, Padding = new Thickness(6, 1, 6, 2), Child = new TextBlock { Text = n.ToString(), Foreground = Brushes.White, FontSize = 11, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center } };
-            dot.SetResourceReference(Border.BackgroundProperty, "Accent");
-            return dot;
+            var g = new Grid { Width = 20, Height = 20, Visibility = n > 0 ? Visibility.Visible : Visibility.Collapsed, IsHitTestVisible = n > 0 };
+            var halo = new Ellipse { Width = 18, Height = 18, Opacity = 0.28 };
+            halo.SetResourceReference(Shape.FillProperty, "Accent");
+            var core = new Ellipse { Width = 10, Height = 10, Stroke = new SolidColorBrush(Color.FromArgb(0x90, 255, 255, 255)), StrokeThickness = 1 };
+            core.SetResourceReference(Shape.FillProperty, "Accent");
+            g.Children.Add(halo);
+            g.Children.Add(core);
+            if (n > 0) g.ToolTip = string.Format(Loc.T("chats.unread_n"), n);
+            return g;
         }
 
         void ShowChatHint()
         {
-            var hint = UI.L("chats.pick", 14, sub: true);
-            hint.HorizontalAlignment = HorizontalAlignment.Center;
-            hint.VerticalAlignment = VerticalAlignment.Center;
-            SetPanel(hint);
+            SelectRow(null);
+            ShowInfo(null, null);
+            var sp = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            var circle = new Border { Width = 84, Height = 84, CornerRadius = new CornerRadius(42), BorderThickness = new Thickness(1), HorizontalAlignment = HorizontalAlignment.Center };
+            circle.SetResourceReference(Border.BackgroundProperty, "HoverBg");
+            circle.SetResourceReference(Border.BorderBrushProperty, "CardRim");
+            var ic = UI.Icon("", 34, accent: true);
+            ic.HorizontalAlignment = HorizontalAlignment.Center;
+            circle.Child = ic;
+            sp.Children.Add(circle);
+            var hint = UI.L("chats.pick", 14, sub: true, wrap: true);
+            hint.TextAlignment = TextAlignment.Center;
+            hint.MaxWidth = 300;
+            hint.Margin = new Thickness(0, 16, 0, 0);
+            sp.Children.Add(hint);
+            SetPanel(sp);
         }
 
-        /// <summary>Содержимое правой части меняется плавно.</summary>
+        /// <summary>Содержимое средней части меняется плавно.</summary>
         void SetPanel(UIElement content)
         {
             if (_chatPanel == null) return;
@@ -332,39 +811,95 @@ namespace MizuEngine
                 }
             }
 
-            // ник и галочка — в своём ряду, выровненном по центру аватарки (иначе ник прилипает к верху, а галочка «съезжает» вниз)
-            var nameRow = UI.Row(UI.T(friend.Nickname, 15, true));
-            nameRow.VerticalAlignment = VerticalAlignment.Center;
-            nameRow.Margin = new Thickness(10, 0, 0, 0);
-            if (friend.Verified) nameRow.Children.Add(Pad(UI.Badge(15, friend.Badge), 6));
-            if (friend.IsPlus) nameRow.Children.Add(UI.PlusAfter(15));
-            ((FrameworkElement)nameRow.Children[0]).VerticalAlignment = VerticalAlignment.Center;
-            nameRow.Margin = new Thickness(0);
-            var titleCol = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) };
-            titleCol.Children.Add(nameRow);
-            if (!friend.Bot) titleCol.Children.Add(Online.Status(friend.Id, 12));   // «в сети» под ником, как в Telegram
-            var who = UI.Row(friend.Bot ? UI.Avatar(friend, 38) : Online.WithDot(UI.Avatar(friend, 38), friend.Id, 38), titleCol);
-            var av = (FrameworkElement)who.Children[0];
-            UI.Hand(who);
-            who.Background = Brushes.Transparent;
-            who.HorizontalAlignment = HorizontalAlignment.Left;
-            who.MouseLeftButtonUp += (s, e) => { Motion.Capture(av, "avatar:" + friend.Id); _ = OpenProfile(friend); };
-
-            var head = new Grid();
-            head.Children.Add(who);
-            if (canWrite)
+            // Шапка переписки (0.11.6): аватарка с «в сети», ник с галочкой, статус; справа — звонок и ⋮
+            var head = ChatHead(friend.Bot ? UI.Avatar(friend, 48) : Online.WithDot(UI.Avatar(friend, 48), friend.Id, 48),
+                                friend.Nickname, friend.Verified ? friend.Badge : null, friend.IsPlus,
+                                friend.Bot ? null : Online.Status(friend.Id, 12.5), null);
+            head.Call.Click += (s, e) => _toast(Loc.T("chats.call_soon"));
+            head.More.Click += (s, e) =>
             {
+                string key = "u:" + friend.Id;
+                bool muted = Inbox.IsMuted(key);
+                var items = new List<(string key, string glyph, Action act)>
+                {
+                    (_infoShown ? "chats.info_hide" : "chats.info_show", "\uE77B", () => HeadClick(friend)),
+                    ("chats.open_profile", "\uE8A7", () => _ = OpenProfile(friend))
+                };
                 // Тема чата: фон и цвет сообщений видят оба
-                var theme = UI.Glass("\uE790", null, (s, e) => ShowThemePicker(_theme, t => SocialApi.SetChatTheme(friend.Id, t), () => OpenChat(friend)), 7);
-                theme.ToolTip = Loc.T("theme.title");
-                theme.HorizontalAlignment = HorizontalAlignment.Right;
-                theme.VerticalAlignment = VerticalAlignment.Center;
-                head.Children.Add(theme);
-            }
+                if (canWrite) items.Add(("theme.title", "\uE790", () => ShowThemePicker(_theme, t => SocialApi.SetChatTheme(friend.Id, t), () => OpenChat(friend))));
+                items.Add((muted ? "chats.notify_on" : "chats.notify_off", muted ? "\uEA8F" : "\uE7ED", () => { Inbox.SetMuted(key, !muted); _toast(Loc.T(muted ? "chats.notify_on.done" : "chats.notify_off.done")); RefreshInfo(); }));
+                ShowMenu(head.More, items.ToArray());
+            };
+            head.Who.MouseLeftButtonUp += (s, e) => HeadClick(friend, head.Avatar);
 
             _themeSource = () => SocialApi.GetChatTheme(friend.Id);
-            BuildChatView(head, canWrite, async text => await SocialApi.SendText(friend.Id, text), friend, footer);
+            BuildChatView(head.Root, canWrite, async text => await SocialApi.SendText(friend.Id, text), friend, footer);
             _ = ReloadTheme(true);
+            SelectRow("u:" + friend.Id);
+            ShowPersonInfo(friend, canWrite);
+        }
+
+        /// <summary>Клик по шапке: панель справа открывается/закрывается. Если окно совсем узкое — сразу профиль.</summary>
+        void HeadClick(Profile friend, FrameworkElement avatar = null)
+        {
+            if (_narrow)
+            {
+                if (avatar != null) Motion.Capture(avatar, "avatar:" + friend.Id);
+                _ = OpenProfile(friend);
+                return;
+            }
+            ToggleInfo();
+        }
+
+        /// <summary>Части шапки переписки.</summary>
+        sealed class Head
+        {
+            public Grid Root;
+            public FrameworkElement Who, Avatar;
+            public Button Call, More;
+            public TextBlock Sub;
+        }
+
+        /// <summary>Шапка переписки: аватарка, имя, галочка, строка под именем; справа круглые кнопки «звонок» и «⋮».</summary>
+        Head ChatHead(FrameworkElement avatar, string name, string badge, bool plus, TextBlock status, string subtitle)
+        {
+            var h = new Head { Root = new Grid(), Avatar = avatar };
+            h.Root.ColumnDefinitions.Add(new ColumnDefinition());
+            h.Root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var nameRow = NameWithBadges(UI.T(name, 18, true), HorizontalAlignment.Left,
+                badge != null ? Pad(UI.Badge(17, badge), 7) : null, plus ? UI.PlusAfter(17) : null);
+            var titleCol = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(13, 0, 10, 0) };
+            titleCol.Children.Add(nameRow);
+            if (status != null) { status.Margin = new Thickness(0, 2, 0, 0); titleCol.Children.Add(status); h.Sub = status; }
+            else if (subtitle != null) { var t = UI.T(subtitle, 12.5, sub: true); t.TextTrimming = TextTrimming.CharacterEllipsis; t.Margin = new Thickness(0, 2, 0, 0); titleCol.Children.Add(t); h.Sub = t; }
+
+            // Аватарка + имя; имя получает только оставшееся место (длинное — с «…», не налезает на кнопки)
+            var who = new Grid { Background = Brushes.Transparent };
+            who.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            who.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            avatar.VerticalAlignment = VerticalAlignment.Center;
+            who.Children.Add(avatar);
+            Grid.SetColumn(titleCol, 1);
+            who.Children.Add(titleCol);
+            who.HorizontalAlignment = HorizontalAlignment.Left;
+            who.ToolTip = Loc.T("chats.info_tip");
+            UI.Hand(who);
+            h.Who = who;
+            h.Root.Children.Add(who);
+
+            h.Call = RoundIcon("\uE717", 44, null, iconSize: 17);
+            h.Call.ToolTip = Loc.T("chats.call");
+            h.More = RoundIcon("\uE712", 44, null, iconSize: 16);
+            h.More.ToolTip = Loc.T("chats.more");
+            // «⋮» — та же иконка «⋯», повёрнутая вертикально
+            if (h.More.Content is FrameworkElement dots) { dots.RenderTransformOrigin = new Point(0.5, 0.5); dots.RenderTransform = new RotateTransform(90); }
+            h.More.Margin = new Thickness(10, 0, 0, 0);
+            var buttons = UI.Row(h.Call, h.More);
+            buttons.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(buttons, 1);
+            h.Root.Children.Add(buttons);
+            return h;
         }
 
         // ================== группа ==================
@@ -375,45 +910,27 @@ namespace MizuEngine
             _chatWith = null;
             _lastMessageId = 0;
 
-            var head = new Grid();
-            var title = new StackPanel { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-            var nameRow = UI.Row(UI.T(g.Name, 15, true));
-            if (g.Badge != null) nameRow.Children.Add(Pad(UI.Badge(15, g.Badge), 6));
-            title.Children.Add(nameRow);
-            var membersText = UI.T("…", 12, sub: true);
-            // «N участников» под названием — клик открывает список (видят все участники группы)
-            membersText.Cursor = System.Windows.Input.Cursors.Hand;
-            membersText.ToolTip = Loc.T("groups.members");
-            membersText.MouseEnter += (s, e) => membersText.TextDecorations = TextDecorations.Underline;
-            membersText.MouseLeave += (s, e) => membersText.TextDecorations = null;
-            membersText.MouseLeftButtonUp += (s, e) => ShowMembers(g);
-            title.Children.Add(membersText);
-            var who = UI.Row(UI.Avatar(g.Look(), 38), title);
-            head.Children.Add(who);
-
+            var head = ChatHead(UI.Avatar(g.Look(), 48), g.Name, g.Badge, false, null, "…");
+            var membersText = head.Sub;
             bool owner = g.Owner == Supa.Me;
-            var settings = UI.Glass("\uE713", null, (s, e) => ShowGroupSettings(g), 7);
-            settings.ToolTip = Loc.T("groups.settings");
-            settings.Margin = new Thickness(0, 0, 6, 0);
-            settings.Visibility = owner || SocialApi.MyProfile?.IsAdmin == true ? Visibility.Visible : Visibility.Collapsed;
-            var invite = UI.Glass("", null, (s, e) => ShowInvite(g), 7);
-            invite.ToolTip = Loc.T("groups.invite");
-            var members = UI.Glass("", null, (s, e) => ShowMembers(g), 7);
-            members.ToolTip = Loc.T("groups.members");
-            members.Margin = new Thickness(6, 0, 0, 0);
-            var leave = UI.Glass(owner ? "" : "", null, async (s, e) =>
+            bool admin = SocialApi.MyProfile?.IsAdmin == true;
+            head.Call.Click += (s, e) => _toast(Loc.T("chats.call_soon"));
+            head.More.Click += (s, e) =>
             {
-                string err = owner ? await SocialApi.DeleteGroup(g.Id) : await SocialApi.LeaveGroup(g.Id);
-                if (err != null) { _toast(err); return; }
-                _toast(Loc.T(owner ? "groups.deleted" : "groups.left"));
-                _groupOpen = 0;
-                await ShowChats();
-            }, 7);
-            leave.ToolTip = Loc.T(owner ? "groups.delete" : "groups.leave");
-            leave.Margin = new Thickness(6, 0, 0, 0);
-            var buttons = UI.Row(settings, invite, members, leave);
-            buttons.HorizontalAlignment = HorizontalAlignment.Right;
-            head.Children.Add(buttons);
+                string key = "g:" + g.Id;
+                bool muted = Inbox.IsMuted(key);
+                var items = new List<(string key, string glyph, Action act)>
+                {
+                    (_infoShown ? "chats.info_hide" : "groups.info_show", "\uE946", () => { if (_narrow) ShowMembers(g); else ToggleInfo(); }),
+                    ("groups.members", "\uE716", () => ShowMembers(g)),
+                    ("groups.invite", "\uE8FA", () => ShowInvite(g))
+                };
+                if (owner || admin) items.Add(("groups.settings", "\uE713", () => ShowGroupSettings(g)));
+                items.Add((owner ? "groups.delete" : "groups.leave", owner ? "\uE74D" : "\uE7E8", () => _ = LeaveOrDelete(g)));
+                items.Add((muted ? "chats.notify_on" : "chats.notify_off", muted ? "\uEA8F" : "\uE7ED", () => { Inbox.SetMuted(key, !muted); _toast(Loc.T(muted ? "chats.notify_on.done" : "chats.notify_off.done")); RefreshInfo(); }));
+                ShowMenu(head.More, items.ToArray());
+            };
+            head.Who.MouseLeftButtonUp += (s, e) => { if (_narrow) ShowMembers(g); else ToggleInfo(); };
 
             _ = LoadMembers();
             async Task LoadMembers()
@@ -427,7 +944,7 @@ namespace MizuEngine
 
             long gid = g.Id;
             _themeSource = async () => (await SocialApi.GetGroup(gid))?.Theme;
-            BuildChatView(head, true, async text =>
+            BuildChatView(head.Root, true, async text =>
             {
                 if (!IsStaff && DateTime.Now < _cooldownUntil) return Loc.T("err.slow_mode");
                 string err = await SocialApi.SendGroupText(g.Id, text);
@@ -435,6 +952,8 @@ namespace MizuEngine
                 return err;
             }, null);
             ApplyTheme(g.Theme);
+            SelectRow("g:" + g.Id);
+            ShowGroupInfo(g);
         }
 
         // ================== общее окно переписки ==================
@@ -443,40 +962,45 @@ namespace MizuEngine
         void BuildChatView(FrameworkElement head, bool canWrite, Func<string, Task<string>> send, Profile friend, UIElement footer = null)
         {
             var dock = new DockPanel();
-            head.Margin = new Thickness(18, 14, 18, 12);
+            head.Margin = new Thickness(20, 16, 16, 14);
             DockPanel.SetDock(head, Dock.Top);
             dock.Children.Add(head);
 
-            var divider = UI.Divider();
-            divider.Margin = new Thickness(0);
+            var divider = new Border { Height = 1 };
+            divider.SetResourceReference(Border.BackgroundProperty, "Divider");
             DockPanel.SetDock(divider, Dock.Top);
             dock.Children.Add(divider);
 
             var me = SocialApi.MyProfile;
             bool muted = canWrite && me?.Muted == true;
             if (muted) canWrite = false;
+            _inputBox = null;
 
             if (canWrite)
             {
+                // Поле ввода (0.11.6): круглая «скрепка», поле-«пилюля» и круглая кнопка «Отправить» цвета темы
                 var input = new Grid { Margin = new Thickness(14, 10, 14, 14) };
                 input.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 input.ColumnDefinitions.Add(new ColumnDefinition());
                 input.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                var box = UI.Field("", 4000);
-                box.Margin = new Thickness(friend != null ? 8 : 0, 0, 8, 0);
+                var box = new TextBox { Style = (Style)UI.Owner.FindResource("PillField"), MaxLength = 4000, MinHeight = 52, Padding = new Thickness(22, 0, 18, 0) };
+                box.Margin = new Thickness(friend != null ? 10 : 0, 0, 10, 0);
                 box.SetResourceReference(FrameworkElement.TagProperty, "chats.placeholder");
                 Grid.SetColumn(box, 1);
-                var sendBtn = new Button { Style = (Style)UI.Owner.FindResource("PrimaryButton"), MinWidth = 48 };
-                var sendIcon = new TextBlock { Text = "", FontFamily = (FontFamily)UI.Owner.FindResource("Icons"), FontSize = 14 };
+                var sendBtn = new Button { Style = (Style)UI.Owner.FindResource("RoundAccent"), Width = 54, Height = 54 };
+                var sendIcon = new TextBlock { Text = "\uE724", FontFamily = (FontFamily)UI.Owner.FindResource("Icons"), FontSize = 19, Foreground = Brushes.White, Margin = new Thickness(2, 1, 0, 0) };
                 sendBtn.Content = sendIcon;
+                sendBtn.ToolTip = Loc.T("chats.send");
                 Grid.SetColumn(sendBtn, 2);
                 input.Children.Add(box);
                 input.Children.Add(sendBtn);
+                _inputBox = box;
                 if (friend != null)
                 {
-                    var presetBtn = UI.Glass("", null, null, 9);
+                    // «Скрепка» — отправить сборку
+                    Button presetBtn = null;
+                    presetBtn = RoundIcon("\uE723", 52, () => PresetMenu(presetBtn, friend), iconSize: 19);
                     presetBtn.ToolTip = Loc.T("chats.send_preset");
-                    presetBtn.Click += (s, e) => PresetMenu(presetBtn, friend);
                     input.Children.Add(presetBtn);
                 }
                 DockPanel.SetDock(input, Dock.Bottom);
@@ -489,7 +1013,7 @@ namespace MizuEngine
                     double left = (_cooldownUntil - DateTime.Now).TotalSeconds;
                     if (_groupOpen == 0 || left <= 0) { sendBtn.IsEnabled = true; sendBtn.Content = sendIcon; tick.Stop(); return; }
                     sendBtn.IsEnabled = false;
-                    sendBtn.Content = new TextBlock { Text = Math.Ceiling(left).ToString(), FontSize = 13, FontWeight = FontWeights.SemiBold };
+                    sendBtn.Content = new TextBlock { Text = Math.Ceiling(left).ToString(), FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White };
                 };
                 dock.Unloaded += (s, e) => tick.Stop();
 
@@ -531,7 +1055,8 @@ namespace MizuEngine
                 dock.Children.Add(note);
             }
 
-            _messages = new StackPanel { Margin = new Thickness(16, 8, 16, 8), RenderTransform = new TranslateTransform() };
+            _messages = new StackPanel { Margin = new Thickness(18, 10, 18, 10), RenderTransform = new TranslateTransform() };
+            _feedDay = default;
             _messagesScroll = UI.Scroll(_messages);
             _pending.Clear();
             _historyLoaded = false;
@@ -540,7 +1065,7 @@ namespace MizuEngine
 
             // Под перепиской — слой фона темы (со скруглением, как у карточки)
             _chatRoot = new Grid();
-            _themeLayer = new Border { CornerRadius = new CornerRadius(21), IsHitTestVisible = false, Opacity = 0 };
+            _themeLayer = new Border { CornerRadius = new CornerRadius(23), IsHitTestVisible = false, Opacity = 0 };
             _chatRoot.Children.Add(_themeLayer);
             _chatRoot.Children.Add(dock);
             _themePoll = 0;
@@ -605,6 +1130,7 @@ namespace MizuEngine
                 }
                 if (m.Sender != Supa.Me) incoming = true;
 
+                DayMark(messages, m.Created, !first);
                 var b = Bubble(m, groupId > 0);
                 if (first)
                 {
@@ -620,7 +1146,7 @@ namespace MizuEngine
                 if (groupId == 0 && list.Any(m => m.Sender == friendId)) _ = MarkReadNow(friendId);
                 if (groupId > 0) GroupSeen(groupId, _lastMessageId);
             }
-            if (incoming && !first && AppActive) ChatSounds.PlayIn();   // новое сообщение от собеседника — звук (окно не в фокусе — звук даст уведомление)
+            if (incoming && !first && AppActive && !Inbox.IsMuted(groupId > 0 ? "g:" + groupId : "u:" + friendId)) ChatSounds.PlayIn();   // новое сообщение от собеседника — звук (окно не в фокусе — звук даст уведомление)
             await CheckRead(friendId, groupId, messages);
             if (first)
                 _messagesScroll.Dispatcher.BeginInvoke(new Action(() => _messagesScroll.ScrollToEnd()), DispatcherPriority.Background);
@@ -643,6 +1169,7 @@ namespace MizuEngine
         Pending AddPending(string text, bool inGroup)
         {
             var m = new ChatMessage { Sender = Supa.Me, Kind = "text", Body = text, Created = DateTime.Now };
+            DayMark(_messages, m.Created, true);
             var b = Bubble(m, inGroup, pending: true);
             var p = new Pending { Body = text, Bubble = b, Status = (TextBlock)b.Tag, Feed = _messages };
             _pending.Add(p);
@@ -750,13 +1277,17 @@ namespace MizuEngine
             if (m.Kind == "group_invite") return InviteCard(m);
             if (m.Kind == "group_added") return AddedCard(m);
 
+            // 0.11.6: пузыри как на макете — свои с бликом и светлой кромкой, чужие — стекло с кромкой
+            var corners = mine ? new CornerRadius(20, 20, 6, 20) : new CornerRadius(20, 20, 20, 6);
             var b = new Border
             {
-                CornerRadius = mine ? new CornerRadius(18, 18, 6, 18) : new CornerRadius(18, 18, 18, 6),
-                Padding = new Thickness(14, 9, 14, 8), Margin = new Thickness(mine ? 80 : 0, 3, mine ? 0 : 80, 3),
+                CornerRadius = corners, BorderThickness = new Thickness(1),
+                Margin = new Thickness(mine ? 80 : 0, 4, mine ? 0 : 80, 4),
                 HorizontalAlignment = mine ? HorizontalAlignment.Right : HorizontalAlignment.Left, MaxWidth = 460
             };
             b.SetResourceReference(Border.BackgroundProperty, mine ? "ChatMine" : "ChatOther");
+            if (mine) b.BorderBrush = new SolidColorBrush(Color.FromArgb(0x48, 255, 255, 255));
+            else b.SetResourceReference(Border.BorderBrushProperty, "CardRim");
 
             var sp = new StackPanel();
             if (inGroup && !mine)
@@ -797,7 +1328,7 @@ namespace MizuEngine
                 t.SetResourceReference(TextBlock.ForegroundProperty, mine ? "ChatMineText" : "Text");
                 sp.Children.Add(t);
             }
-            var time = new TextBlock { Text = UI.Ago(m.Created), FontSize = 10.5, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.7 };
+            var time = new TextBlock { Text = m.Created.ToString("HH:mm"), FontSize = 10.5, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.7 };
             time.SetResourceReference(TextBlock.ForegroundProperty, mine ? "ChatMineText" : "SubText");
             var timeRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 3, 0, 0) };
             timeRow.Children.Add(time);
@@ -827,7 +1358,21 @@ namespace MizuEngine
                 }
             }
             sp.Children.Add(timeRow);
-            b.Child = sp;
+            sp.Margin = new Thickness(15, 10, 14, 8);
+            var layers = new Grid();
+            if (mine)
+                layers.Children.Add(new Border
+                {
+                    CornerRadius = corners, IsHitTestVisible = false,
+                    Background = new LinearGradientBrush(new GradientStopCollection
+                    {
+                        new GradientStop(Color.FromArgb(0x40, 255, 255, 255), 0),
+                        new GradientStop(Color.FromArgb(0x00, 255, 255, 255), 0.6),
+                        new GradientStop(Color.FromArgb(0x22, 0, 0, 0x30), 1)
+                    }, new Point(0, 0), new Point(1, 1))
+                });
+            layers.Children.Add(sp);
+            b.Child = layers;
             if (!inGroup || mine) return b;
 
             // Чужое сообщение в группе — аватарка слева, как в Telegram. Клик — профиль.
@@ -969,6 +1514,8 @@ namespace MizuEngine
             _poll.Stop();
             _chatWith = null;
             _groupOpen = 0;
+            SelectRow(null);
+            ShowInfo(null, null);
             var sp = new StackPanel { Margin = new Thickness(24, 20, 24, 20) };
             sp.Children.Add(UI.Row(UI.Squircle("", UI.Teal, 34), Pad(UI.L("groups.new", 20, true), 12)));
 
@@ -1209,7 +1756,7 @@ namespace MizuEngine
             {
                 _themeLayer.Background = brush;
                 // На своей картинке — лёгкое затемнение, чтобы пузыри не терялись
-                _themeLayer.Child = _theme.Bg == "custom" ? new Border { CornerRadius = new CornerRadius(21), Background = new SolidColorBrush(Color.FromArgb(0x40, 0, 0, 0)) } : null;
+                _themeLayer.Child = _theme.Bg == "custom" ? new Border { CornerRadius = new CornerRadius(23), Background = new SolidColorBrush(Color.FromArgb(0x40, 0, 0, 0)) } : null;
                 res["Text"] = Brushes.White;
                 res["SubText"] = new SolidColorBrush(Color.FromArgb(0xB8, 255, 255, 255));
                 res["CardBg"] = new SolidColorBrush(Color.FromArgb(0x48, 0x0C, 0x0D, 0x12));

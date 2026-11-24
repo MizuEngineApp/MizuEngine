@@ -1,5 +1,6 @@
 ﻿// MizuEngine © 2026 rainy (t.me/MrRainthisisme). Все права защищены. Копировать код и выпускать изменённые версии запрещено — см. LICENSE.
 using System;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
@@ -179,8 +180,31 @@ namespace MizuEngine
             return (dockIcon, false);
         }
 
+        /// <summary>
+        /// Свернуть окно с «джинном», не дожидаясь Windows (своя кнопка «_» у окна MizuEngine): копия окна появляется,
+        /// и только потом окно сворачивается. false — оболочки нет, сворачивай обычным способом.
+        /// </summary>
+        public static bool MinimizeAnimated(IntPtr hwnd)
+        {
+            if (D == null || Anim == null || hwnd == IntPtr.Zero) return false;
+            D.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    bool want = (Dock != null && Dock.Enabled && S.DockAnimations) || (Island != null && Island.FliesUp);
+                    Rect dockIcon = Dock != null && Dock.Enabled && S.DockAnimations ? Dock.IconFor(hwnd) : Rect.Empty;
+                    (Rect rect, bool up) target = want ? FlyTarget(hwnd, dockIcon) : (Rect.Empty, false);
+                    if (target.rect.IsEmpty) { WindowAnimator.SetMinimized(hwnd, true); return; }
+                    Anim.Minimize(hwnd, target.rect, target.up, alreadyMinimized: false);
+                }
+                catch (Exception e) { Settings.Log(e); WindowAnimator.SetMinimized(hwnd, true); }
+            }));
+            return true;
+        }
+
         static void StartWatcher()
         {
+            StartMouse();
             if (_hook != IntPtr.Zero) return;
             if (_proc == null) _proc = OnWinEvent;
             _hook = DockNative.SetWinEventHook(DockNative.EVENT_SYSTEM_MINIMIZESTART, DockNative.EVENT_SYSTEM_MINIMIZESTART, IntPtr.Zero, _proc, 0, 0, 0);
@@ -188,9 +212,87 @@ namespace MizuEngine
 
         static void StopWatcher()
         {
+            StopMouse();
             if (_hook == IntPtr.Zero) return;
             DockNative.UnhookWinEvent(_hook);
             _hook = IntPtr.Zero;
+        }
+
+        // ================== кнопка «_»: заранее готовим «джинна» (без вспышки и задержки) ==================
+
+        delegate IntPtr LowLevelMouseProc(int code, IntPtr w, IntPtr l);
+        [StructLayout(LayoutKind.Sequential)] struct MSLLHOOKSTRUCT { public Native.POINT pt; public uint mouseData, flags, time; public IntPtr extra; }
+        [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int id, LowLevelMouseProc fn, IntPtr mod, uint thread);
+        [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr h);
+        [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int code, IntPtr w, IntPtr l);
+        [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Native.POINT pt);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
+
+        static IntPtr _mouseHook;
+        static LowLevelMouseProc _mouseProc;   // держим ссылку, иначе сборщик мусора удалит делегат
+        static Native.POINT _downPt;
+
+        static void StartMouse()
+        {
+            if (_mouseHook != IntPtr.Zero) return;
+            _mouseProc ??= OnMouse;
+            _mouseHook = SetWindowsHookEx(14, _mouseProc, GetModuleHandle(null), 0);   // WH_MOUSE_LL
+        }
+
+        static void StopMouse()
+        {
+            if (_mouseHook == IntPtr.Zero) return;
+            UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = IntPtr.Zero;
+        }
+
+        /// <summary>
+        /// Следим только за левой кнопкой. Нажали — проверяем (в очереди потока, не задерживая мышь), не на «_» ли,
+        /// и если да — готовим копию окна. Отпустили там же — показываем копию поверх окна, раньше, чем окно свернётся.
+        /// </summary>
+        static IntPtr OnMouse(int code, IntPtr w, IntPtr l)
+        {
+            if (code >= 0)
+            {
+                try
+                {
+                    int msg = w.ToInt32();
+                    if (msg == 0x0201)   // WM_LBUTTONDOWN
+                    {
+                        var m = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(l);
+                        _downPt = m.pt;
+                        D?.BeginInvoke(DispatcherPriority.Send, new Action(() => PrepareAt(m.pt)));
+                    }
+                    else if (msg == 0x0202 && Anim != null && Anim.Prepared != IntPtr.Zero)   // WM_LBUTTONUP
+                    {
+                        var m = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(l);
+                        if (Math.Abs(m.pt.X - _downPt.X) <= 6 && Math.Abs(m.pt.Y - _downPt.Y) <= 6) Anim.Reveal();
+                    }
+                }
+                catch (Exception e) { Settings.Log(e); }
+            }
+            return CallNextHookEx(IntPtr.Zero, code, w, l);
+        }
+
+        static void PrepareAt(Native.POINT pt)
+        {
+            try
+            {
+                if (Anim == null) return;
+                IntPtr h = WindowFromPoint(pt);
+                if (h == IntPtr.Zero) return;
+                h = DockNative.GetAncestor(h, 2);   // GA_ROOT
+                if (h == IntPtr.Zero || Native.IsIconic(h) || !Native.IsWindowVisible(h)) return;
+                long lp = ((long)(pt.Y & 0xFFFF) << 16) | (uint)(pt.X & 0xFFFF);
+                // Спрашиваем само окно, что под курсором; зависшее окно не ждём (SMTO_ABORTIFHUNG, 60 мс)
+                if (DockNative.SendMessageTimeout(h, 0x0084, IntPtr.Zero, new IntPtr(lp), 0x0002, 60, out IntPtr hit) == IntPtr.Zero) return;
+                if (hit.ToInt64() != 8) return;   // HTMINBUTTON — кнопка «_»
+                Rect dockIcon = Dock != null && Dock.Enabled && S.DockAnimations ? Dock.IconFor(h) : Rect.Empty;
+                var target = FlyTarget(h, dockIcon);
+                if (target.rect.IsEmpty) return;
+                Anim.Prepare(h, target.rect, target.up);
+            }
+            catch (Exception e) { Settings.Log(e); }
         }
 
         /// <summary>Окно свернули кнопкой «_», сочетанием клавиш или из самой программы — тоже показываем «джинна».</summary>
@@ -199,6 +301,8 @@ namespace MizuEngine
             try
             {
                 if (ev != DockNative.EVENT_SYSTEM_MINIMIZESTART || idObject != 0 || hwnd == IntPtr.Zero || Anim == null) return;
+                // Свернули кнопкой «_», а копия окна уже готова — «джинн» сразу, без вспышки и паузы
+                if (Anim.Go(hwnd)) { _lastMinimize = DateTime.UtcNow; return; }
                 if (hwnd == Anim.Current) return;   // это сворачиваем мы сами (клик по доку)
                 // «Свернуть все окна» (Win+M) — анимируем только первое, остальные просто сворачиваются
                 var now = DateTime.UtcNow;
